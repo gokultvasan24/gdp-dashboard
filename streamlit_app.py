@@ -177,10 +177,14 @@ def fit_arima_model(data, p, d, q):
 
 def create_performance_metrics(y_true, y_pred, currency_symbol):
     """Create comprehensive performance metrics"""
-    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
-    r2 = float(r2_score(y_true, y_pred))
-    mae = float(np.mean(np.abs(y_true - y_pred)))
-    mape = float(np.mean(np.abs((y_true - y_pred) / y_true)) * 100)
+    # Ensure 1D arrays
+    y_true_flat = np.ravel(y_true)
+    y_pred_flat = np.ravel(y_pred)
+    
+    rmse = float(np.sqrt(mean_squared_error(y_true_flat, y_pred_flat)))
+    r2 = float(r2_score(y_true_flat, y_pred_flat))
+    mae = float(np.mean(np.abs(y_true_flat - y_pred_flat)))
+    mape = float(np.mean(np.abs((y_true_flat - y_pred_flat) / np.where(y_true_flat != 0, y_true_flat, 1))) * 100)
     
     return {
         'RMSE': f"{currency_symbol}{rmse:.4f}",
@@ -189,13 +193,39 @@ def create_performance_metrics(y_true, y_pred, currency_symbol):
         'MAPE': f"{mape:.2f}%"
     }
 
-def safe_statistical_test(test_func, data, test_name=""):
-    """Safe wrapper for statistical tests with error handling"""
+def safe_descriptive_stats(data, test_name=""):
+    """Calculate descriptive statistics with proper error handling"""
     try:
-        result = test_func(data)
-        return result, None
+        # Ensure data is 1D array and handle NaN/inf
+        data_flat = np.ravel(data)
+        data_clean = data_flat[np.isfinite(data_flat)]
+        
+        if len(data_clean) == 0:
+            return None, f"No valid data points for {test_name}"
+        
+        stats = {
+            'mean': float(np.mean(data_clean)),
+            'std': float(np.std(data_clean)),
+            'skewness': float(skew(data_clean)),
+            'kurtosis': float(kurtosis(data_clean))
+        }
+        return stats, None
     except Exception as e:
-        return None, f"{test_name} test failed: {str(e)}"
+        return None, f"{test_name} failed: {str(e)}"
+
+def safe_stat_test(test_func, data, test_name=""):
+    """Safe wrapper for statistical tests"""
+    try:
+        # Ensure data is 1D array
+        data_flat = np.ravel(data)
+        data_clean = data_flat[np.isfinite(data_flat)]
+        
+        if len(data_clean) == 0:
+            return None, f"No valid data for {test_name}"
+            
+        return test_func(data_clean), None
+    except Exception as e:
+        return None, f"{test_name} failed: {str(e)}"
 
 # =============================================================================
 # MAIN ANALYSIS LOGIC
@@ -276,7 +306,7 @@ if run_analysis_btn:
     
     status_text.text("🔮 Running polynomial regression...")
     
-    # Prepare features
+    # Prepare features - ensure proper array shapes
     dates = np.array([d.toordinal() for d in price_data.index]).reshape(-1, 1).astype(float)
     dates_mean = float(dates.mean())
     dates_range = float(dates.max() - dates.min())
@@ -288,15 +318,21 @@ if run_analysis_btn:
     X = (dates - dates_mean) / dates_range
     y = price_data.values.astype(float)
     
+    # Ensure y is 1D
+    y_flat = np.ravel(y)
+    
     # Polynomial regression
     poly = PolynomialFeatures(degree=degree, include_bias=False)
     X_poly = poly.fit_transform(X)
     model = LinearRegression()
-    model.fit(X_poly, y)
+    model.fit(X_poly, y_flat)
     y_pred = model.predict(X_poly)
     
+    # Ensure predictions are 1D
+    y_pred_flat = np.ravel(y_pred)
+    
     # Performance metrics
-    metrics = create_performance_metrics(y, y_pred, currency_symbol)
+    metrics = create_performance_metrics(y_flat, y_pred_flat, currency_symbol)
     
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("RMSE", metrics['RMSE'])
@@ -311,7 +347,7 @@ if run_analysis_btn:
     next_day_poly = poly.transform(next_day_features)
     next_day_pred = model.predict(next_day_poly)
     
-    forecast_value = float(next_day_pred[0])
+    forecast_value = float(np.ravel(next_day_pred)[0])
     price_change = forecast_value - current_price
     percent_change = (price_change / current_price) * 100
     
@@ -343,7 +379,9 @@ if run_analysis_btn:
             for d in range(d_range[0], d_range[1] + 1):
                 for q in range(q_range[0], q_range[1] + 1):
                     try:
-                        model_arima, error = fit_arima_model(price_data.values, p, d, q)
+                        # Use flattened price data for ARIMA
+                        price_data_flat = np.ravel(price_data.values)
+                        model_arima, error = fit_arima_model(price_data_flat, p, d, q)
                         if model_arima is not None:
                             arima_results.append({
                                 'p': p, 'd': d, 'q': q,
@@ -351,7 +389,7 @@ if run_analysis_btn:
                                 'BIC': float(model_arima.bic),
                                 'model': model_arima
                             })
-                    except:
+                    except Exception as e:
                         continue
     
     if arima_results:
@@ -377,7 +415,7 @@ if run_analysis_btn:
         
         forecast_data = []
         for i in range(forecast_steps):
-            forecast_value = float(arima_pred[i])
+            forecast_value = float(np.ravel(arima_pred)[i])
             change = forecast_value - current_price
             change_pct = (change / current_price) * 100
             
@@ -401,44 +439,63 @@ if run_analysis_btn:
     
     st.markdown('<div class="section-header">🔬 Statistical Tests</div>', unsafe_allow_html=True)
     
-    # Residuals analysis
-    residuals = y - y_pred
+    # Residuals analysis - ensure 1D array
+    residuals = y_flat - y_pred_flat
     
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("Normality Test (Jarque-Bera)")
-        try:
-            jb_stat, jb_p = jarque_bera(residuals)
+        jb_result, jb_error = safe_stat_test(
+            lambda x: jarque_bera(x), 
+            residuals, 
+            "Jarque-Bera"
+        )
+        
+        if jb_error:
+            st.error(jb_error)
+        else:
+            jb_stat, jb_p = jb_result
             st.write(f"Statistic: {jb_stat:.4f}")
             st.write(f"P-value: {jb_p:.4f}")
             if jb_p > 0.05:
                 st.success("✓ Residuals are normally distributed")
             else:
                 st.warning("✗ Residuals are not normally distributed")
-        except Exception as e:
-            st.error(f"Test failed: {str(e)}")
     
     with col2:
         st.subheader("Stationarity Test (ADF)")
-        try:
-            adf_stat, adf_p, _, _, _, _ = adfuller(residuals)
+        adf_result, adf_error = safe_stat_test(
+            lambda x: adfuller(x), 
+            residuals, 
+            "ADF"
+        )
+        
+        if adf_error:
+            st.error(adf_error)
+        else:
+            adf_stat, adf_p, _, _, _, _ = adf_result
             st.write(f"Statistic: {adf_stat:.4f}")
             st.write(f"P-value: {adf_p:.4f}")
             if adf_p <= 0.05:
                 st.success("✓ Residuals are stationary")
             else:
                 st.warning("✗ Residuals are not stationary")
-        except Exception as e:
-            st.error(f"Test failed: {str(e)}")
     
     # Additional tests
     col3, col4 = st.columns(2)
     
     with col3:
         st.subheader("Autocorrelation Test (Ljung-Box)")
-        try:
-            lb_result = acorr_ljungbox(residuals, lags=10, return_df=True)
+        lb_result, lb_error = safe_stat_test(
+            lambda x: acorr_ljungbox(x, lags=10, return_df=True), 
+            residuals, 
+            "Ljung-Box"
+        )
+        
+        if lb_error:
+            st.error(lb_error)
+        else:
             lb_stat = lb_result['lb_stat'].iloc[-1]
             lb_p = lb_result['lb_pvalue'].iloc[-1]
             st.write(f"Statistic: {lb_stat:.4f}")
@@ -447,15 +504,18 @@ if run_analysis_btn:
                 st.success("✓ No significant autocorrelation")
             else:
                 st.warning("✗ Significant autocorrelation present")
-        except Exception as e:
-            st.error(f"Test failed: {str(e)}")
     
     with col4:
         st.subheader("Descriptive Statistics")
-        st.write(f"Mean: {np.mean(residuals):.6f}")
-        st.write(f"Std Dev: {np.std(residuals):.6f}")
-        st.write(f"Skewness: {skew(residuals):.4f}")
-        st.write(f"Kurtosis: {kurtosis(residuals):.4f}")
+        stats, stats_error = safe_descriptive_stats(residuals, "Descriptive statistics")
+        
+        if stats_error:
+            st.error(stats_error)
+        else:
+            st.write(f"Mean: {stats['mean']:.6f}")
+            st.write(f"Std Dev: {stats['std']:.6f}")
+            st.write(f"Skewness: {stats['skewness']:.4f}")
+            st.write(f"Kurtosis: {stats['kurtosis']:.4f}")
     
     progress_bar.progress(100)
     status_text.text("✅ Analysis complete!")
@@ -471,8 +531,8 @@ if run_analysis_btn:
     
     with tab1:
         fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(price_data.index, y, label='Actual', linewidth=2, alpha=0.8, color='blue')
-        ax.plot(price_data.index, y_pred, label='Predicted', linestyle='--', linewidth=2, color='red')
+        ax.plot(price_data.index, y_flat, label='Actual', linewidth=2, alpha=0.8, color='blue')
+        ax.plot(price_data.index, y_pred_flat, label='Predicted', linestyle='--', linewidth=2, color='red')
         ax.set_title(f"Polynomial Regression Fit (Degree {degree})")
         ax.set_ylabel(f"Price ({currency_symbol})")
         ax.legend()
@@ -529,18 +589,18 @@ if run_analysis_btn:
             
             # ARIMA forecast
             forecast_dates = [price_data.index[-1]] + [price_data.index[-1] + timedelta(days=i) for i in range(1, forecast_steps + 1)]
-            forecast_values = [price_data.values[-1]] + [float(x) for x in arima_pred]
+            forecast_values = [price_data.values[-1]] + [float(np.ravel(arima_pred)[i]) for i in range(forecast_steps)]
             
             ax.plot(forecast_dates, forecast_values, label='Forecast', 
                    linewidth=2, marker='o', color='red')
             
             # Confidence interval
             if hasattr(arima_ci, 'iloc'):
-                ci_lower = [price_data.values[-1]] + [float(x) for x in arima_ci.iloc[:, 0]]
-                ci_upper = [price_data.values[-1]] + [float(x) for x in arima_ci.iloc[:, 1]]
+                ci_lower = [price_data.values[-1]] + [float(np.ravel(arima_ci.iloc[:, 0])[i]) for i in range(forecast_steps)]
+                ci_upper = [price_data.values[-1]] + [float(np.ravel(arima_ci.iloc[:, 1])[i]) for i in range(forecast_steps)]
             else:
-                ci_lower = [price_data.values[-1]] + [float(x) for x in arima_ci[:, 0]]
-                ci_upper = [price_data.values[-1]] + [float(x) for x in arima_ci[:, 1]]
+                ci_lower = [price_data.values[-1]] + [float(np.ravel(arima_ci[:, 0])[i]) for i in range(forecast_steps)]
+                ci_upper = [price_data.values[-1]] + [float(np.ravel(arima_ci[:, 1])[i]) for i in range(forecast_steps)]
             
             ax.fill_between(forecast_dates, ci_lower, ci_upper, 
                           alpha=0.3, color='red', label='95% Confidence Interval')
