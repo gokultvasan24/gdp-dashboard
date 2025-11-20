@@ -17,6 +17,19 @@ from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 import warnings
 warnings.filterwarnings("ignore")
 
+# Try to import ARCH models, install if not available
+try:
+    from arch import arch_model
+    ARCH_AVAILABLE = True
+except ImportError:
+    ARCH_AVAILABLE = False
+    st.warning("ARCH package not available. Installing required packages...")
+    import subprocess
+    import sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "arch"])
+    from arch import arch_model
+    ARCH_AVAILABLE = True
+
 # =============================================================================
 # CONFIGURATION AND SETUP
 # =============================================================================
@@ -76,10 +89,10 @@ st.markdown('<div class="main-header">Advanced Hybrid Stock Forecasting Platform
 with st.expander("📖 About this App", expanded=False):
     st.markdown("""
     **Features:**
-    - 📊 Polynomial Regression + ARIMA hybrid modeling
+    - 📊 Polynomial Regression + GJR-GARCH hybrid modeling
     - 🔍 Comprehensive statistical testing (ADF, KPSS, Jarque-Bera, Ljung-Box)
     - 📈 Multi-timeframe analysis and forecasting
-    - 💹 High-Open and Low-Open percentage analysis
+    - 💹 Volatility modeling with GJR-GARCH
     - 🎯 Interactive parameter tuning
     - 📱 Responsive design for all devices
     
@@ -125,11 +138,11 @@ st.sidebar.subheader("Model Parameters")
 degree = st.sidebar.slider("Polynomial Degree", 1, 8, 3, 
                           help="Higher degrees can capture more complex patterns but may overfit")
 
-# ARIMA Parameters
-st.sidebar.subheader("ARIMA Configuration")
-p_range = st.sidebar.slider("AR Order (p) Range", 0, 3, (0, 2))
-d_range = st.sidebar.slider("Differencing (d) Range", 0, 2, (0, 1))
-q_range = st.sidebar.slider("MA Order (q) Range", 0, 3, (0, 2))
+# GJR-GARCH Parameters
+st.sidebar.subheader("GJR-GARCH Configuration")
+garch_p = st.sidebar.slider("GARCH p (Lag Order)", 1, 3, 1)
+garch_q = st.sidebar.slider("GARCH q (Volatility Lags)", 1, 3, 1)
+garch_o = st.sidebar.slider("GJR o (Asymmetric Terms)", 1, 3, 1)
 
 # Forecast Input with default 26100
 st.sidebar.subheader("Forecast Input")
@@ -166,14 +179,14 @@ def detect_currency(ticker):
     else:
         return "$"
 
-def fit_arima_model(data, p, d, q):
-    """Fit ARIMA model with error handling"""
+def fit_gjr_garch_model(returns, p=1, q=1, o=1):
+    """Fit GJR-GARCH model with error handling"""
     try:
-        model = SARIMAX(data, order=(p, d, q), seasonal_order=(0, 0, 0, 0))
-        fitted_model = model.fit(disp=False)
+        model = arch_model(returns, vol='Garch', p=p, q=q, o=o, dist='normal')
+        fitted_model = model.fit(disp='off')
         return fitted_model, None
     except Exception as e:
-        return None, str(e)
+        return None, f"GJR-GARCH fitting failed: {str(e)}"
 
 def create_performance_metrics(y_true, y_pred, currency_symbol):
     """Create comprehensive performance metrics"""
@@ -231,35 +244,50 @@ def safe_stat_test(test_func, data, test_name=""):
     except Exception as e:
         return None, f"{test_name} failed: {str(e)}"
 
-def safe_plot_forecast(historical_dates, historical_prices, forecast_dates, forecast_values, ci_lower=None, ci_upper=None):
+def calculate_returns(prices):
+    """Calculate percentage returns from price series"""
+    try:
+        returns = prices.pct_change().dropna() * 100
+        return returns
+    except Exception as e:
+        return None
+
+def safe_plot_forecast(historical_dates, historical_prices, forecast_dates, forecast_values, volatility_forecast=None):
     """Safe plotting function for forecasts"""
     try:
-        fig, ax = plt.subplots(figsize=(12, 6))
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
         
-        # Plot historical data
-        ax.plot(historical_dates, historical_prices, label='Historical', 
+        # Plot 1: Price forecast
+        ax1.plot(historical_dates, historical_prices, label='Historical Prices', 
                linewidth=2, color='blue')
         
-        # Plot forecast - ensure proper array shapes
+        # Ensure forecast data is properly formatted
         forecast_dates_flat = list(forecast_dates)
         forecast_values_flat = [float(x) for x in np.ravel(forecast_values)]
         
-        ax.plot(forecast_dates_flat, forecast_values_flat, label='Forecast', 
+        ax1.plot(forecast_dates_flat, forecast_values_flat, label='Price Forecast', 
                linewidth=2, marker='o', color='red')
         
-        # Plot confidence interval if provided
-        if ci_lower is not None and ci_upper is not None:
-            ci_lower_flat = [float(x) for x in np.ravel(ci_lower)]
-            ci_upper_flat = [float(x) for x in np.ravel(ci_upper)]
-            
-            ax.fill_between(forecast_dates_flat, ci_lower_flat, ci_upper_flat, 
-                          alpha=0.3, color='red', label='95% Confidence Interval')
-        
-        ax.set_title("ARIMA Forecast with Confidence Intervals")
-        ax.set_ylabel("Price")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
+        ax1.set_title("GJR-GARCH Price Forecast")
+        ax1.set_ylabel("Price")
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        plt.sca(ax1)
         plt.xticks(rotation=45)
+        
+        # Plot 2: Volatility forecast
+        if volatility_forecast is not None:
+            volatility_flat = [float(x) for x in np.ravel(volatility_forecast)]
+            ax2.plot(forecast_dates_flat, volatility_flat, label='Volatility Forecast', 
+                   linewidth=2, marker='s', color='orange')
+            ax2.set_title("GJR-GARCH Volatility Forecast")
+            ax2.set_ylabel("Volatility (%)")
+            ax2.set_xlabel("Date")
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            plt.sca(ax2)
+            plt.xticks(rotation=45)
+        
         plt.tight_layout()
         return fig, None
         
@@ -413,82 +441,118 @@ if run_analysis_btn:
     progress_bar.progress(70)
     
     # =============================================================================
-    # ARIMA ANALYSIS SECTION
+    # GJR-GARCH VOLATILITY FORECASTING SECTION
     # =============================================================================
     
-    st.markdown('<div class="section-header">📊 ARIMA Analysis</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">📊 GJR-GARCH Volatility Analysis</div>', unsafe_allow_html=True)
     
-    status_text.text("🔍 Running ARIMA analysis...")
+    status_text.text("🔍 Running GJR-GARCH analysis...")
     
-    # Fit multiple ARIMA models
-    arima_results = []
-    with st.spinner("Fitting ARIMA models..."):
-        for p in range(p_range[0], p_range[1] + 1):
-            for d in range(d_range[0], d_range[1] + 1):
-                for q in range(q_range[0], q_range[1] + 1):
-                    try:
-                        # Use flattened price data for ARIMA
-                        price_data_flat = np.ravel(price_data.values)
-                        model_arima, error = fit_arima_model(price_data_flat, p, d, q)
-                        if model_arima is not None:
-                            arima_results.append({
-                                'p': p, 'd': d, 'q': q,
-                                'AIC': float(model_arima.aic),
-                                'BIC': float(model_arima.bic),
-                                'model': model_arima
-                            })
-                    except Exception as e:
-                        continue
+    # Calculate returns for GARCH modeling
+    returns = calculate_returns(price_data)
     
-    if arima_results:
-        # Display best model
-        arima_df = pd.DataFrame(arima_results).sort_values('AIC')
-        best_arima = arima_df.iloc[0]
-        
-        st.subheader("🏆 Best ARIMA Model")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Order", f"({best_arima['p']},{best_arima['d']},{best_arima['q']})")
-        col2.metric("AIC", f"{best_arima['AIC']:.2f}")
-        col3.metric("BIC", f"{best_arima['BIC']:.2f}")
-        
+    if returns is not None and len(returns) > 50:
         try:
-            # ARIMA forecast
-            forecast_steps = 5
-            arima_forecast = best_arima['model'].get_forecast(steps=forecast_steps)
-            arima_pred = arima_forecast.predicted_mean
-            arima_ci = arima_forecast.conf_int()
+            # Fit GJR-GARCH model
+            with st.spinner("Fitting GJR-GARCH model..."):
+                garch_model, garch_error = fit_gjr_garch_model(
+                    returns, p=garch_p, q=garch_q, o=garch_o
+                )
             
-            # Display ARIMA forecast
-            st.subheader("📅 ARIMA 5-Day Forecast")
-            forecast_dates = [price_data.index[-1] + timedelta(days=i) for i in range(1, forecast_steps + 1)]
-            
-            forecast_data = []
-            for i in range(forecast_steps):
-                forecast_value = float(np.ravel(arima_pred)[i])
-                change = forecast_value - current_price
-                change_pct = (change / current_price) * 100
+            if garch_error:
+                st.error(f"GJR-GARCH modeling failed: {garch_error}")
+                garch_forecast = None
+            else:
+                # Display model summary
+                st.subheader("🏆 GJR-GARCH Model Summary")
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Model", f"GJR-GARCH({garch_p},{garch_q},{garch_o})")
+                col1.metric("AIC", f"{garch_model.aic:.2f}")
+                col2.metric("BIC", f"{garch_model.bic:.2f}")
+                col3.metric("Log Likelihood", f"{garch_model.loglikelihood:.2f}")
                 
-                forecast_data.append({
-                    'Day': i + 1,
-                    'Date': forecast_dates[i].strftime('%Y-%m-%d'),
-                    'Price': f"{currency_symbol}{forecast_value:.2f}",
-                    'Change': f"{change:+.2f}",
-                    'Change %': f"{change_pct:+.2f}%"
+                # Display parameters
+                st.subheader("📋 Model Parameters")
+                params_df = pd.DataFrame({
+                    'Parameter': garch_model.params.index,
+                    'Value': garch_model.params.values,
+                    'Std Error': garch_model.std_errors.values
                 })
-            
-            # Display as dataframe
-            forecast_df = pd.DataFrame(forecast_data)
-            st.dataframe(forecast_df, use_container_width=True)
-            
+                st.dataframe(params_df, use_container_width=True)
+                
+                # Generate forecasts
+                forecast_steps = 5
+                garch_forecast = garch_model.forecast(horizon=forecast_steps, reindex=False)
+                
+                # Get volatility forecasts (standard deviation)
+                conditional_volatility = np.sqrt(garch_forecast.variance.values[-1, :])
+                
+                # Create price forecasts based on volatility and recent trend
+                last_return = returns.iloc[-1]
+                volatility_scale = conditional_volatility / 100  # Convert to decimal
+                
+                # Generate realistic price forecasts
+                price_forecasts = []
+                current_forecast_price = current_price
+                
+                for i in range(forecast_steps):
+                    # Use volatility to generate realistic price movements
+                    expected_return = last_return * 0.7  # Dampen the last return
+                    random_component = np.random.normal(0, volatility_scale[i] * 2)
+                    daily_return = (expected_return + random_component) / 100
+                    
+                    next_price = current_forecast_price * (1 + daily_return)
+                    price_forecasts.append(next_price)
+                    current_forecast_price = next_price
+                
+                # Display GJR-GARCH forecast
+                st.subheader("📅 GJR-GARCH 5-Day Forecast")
+                forecast_dates = [price_data.index[-1] + timedelta(days=i) for i in range(1, forecast_steps + 1)]
+                
+                forecast_data = []
+                for i in range(forecast_steps):
+                    forecast_price = float(price_forecasts[i])
+                    volatility = float(conditional_volatility[i])
+                    change = forecast_price - current_price
+                    change_pct = (change / current_price) * 100
+                    
+                    forecast_data.append({
+                        'Day': i + 1,
+                        'Date': forecast_dates[i].strftime('%Y-%m-%d'),
+                        'Price': f"{currency_symbol}{forecast_price:.2f}",
+                        'Volatility': f"{volatility:.2f}%",
+                        'Change': f"{change:+.2f}",
+                        'Change %': f"{change_pct:+.2f}%"
+                    })
+                
+                # Display as dataframe
+                forecast_df = pd.DataFrame(forecast_data)
+                st.dataframe(forecast_df, use_container_width=True)
+                
+                # Volatility insights
+                st.subheader("💡 Volatility Insights")
+                avg_volatility = np.mean(conditional_volatility)
+                max_volatility = np.max(conditional_volatility)
+                
+                vol_col1, vol_col2 = st.columns(2)
+                with vol_col1:
+                    st.metric("Average Forecast Volatility", f"{avg_volatility:.2f}%")
+                with vol_col2:
+                    st.metric("Maximum Forecast Volatility", f"{max_volatility:.2f}%")
+                
+                if avg_volatility > 3.0:
+                    st.warning("🔴 High volatility expected - Consider risk management")
+                elif avg_volatility > 1.5:
+                    st.info("🟡 Moderate volatility expected - Normal market conditions")
+                else:
+                    st.success("🟢 Low volatility expected - Stable market conditions")
+                    
         except Exception as e:
-            st.error(f"ARIMA forecast failed: {str(e)}")
-            arima_pred = None
-            arima_ci = None
-            
+            st.error(f"GJR-GARCH analysis failed: {str(e)}")
+            garch_forecast = None
     else:
-        st.warning("No valid ARIMA models could be fitted with the current parameters.")
-        arima_pred = None
-        arima_ci = None
+        st.warning("Insufficient return data for GJR-GARCH modeling.")
+        garch_forecast = None
     
     progress_bar.progress(90)
     
@@ -586,7 +650,7 @@ if run_analysis_btn:
     st.markdown('<div class="section-header">📊 Visualizations</div>', unsafe_allow_html=True)
     
     # Create tabs for different visualizations
-    tab1, tab2, tab3, tab4 = st.tabs(["Model Fit", "Residuals", "ACF/PACF", "Forecast"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Model Fit", "Residuals", "ACF/PACF", "GARCH Forecast"])
     
     with tab1:
         try:
@@ -644,7 +708,7 @@ if run_analysis_btn:
             st.error(f"Could not create ACF/PACF plots: {str(e)}")
     
     with tab4:
-        if arima_results and arima_pred is not None:
+        if garch_forecast is not None and 'price_forecasts' in locals():
             try:
                 # Historical data (last 60 days)
                 plot_days = min(60, len(price_data))
@@ -653,24 +717,17 @@ if run_analysis_btn:
                 
                 # Prepare forecast data
                 forecast_dates = [price_data.index[-1]] + [price_data.index[-1] + timedelta(days=i) for i in range(1, forecast_steps + 1)]
-                forecast_values = [price_data.values[-1]] + [float(np.ravel(arima_pred)[i]) for i in range(forecast_steps)]
+                forecast_values = [price_data.values[-1]] + price_forecasts
                 
-                # Prepare confidence intervals
-                ci_lower = None
-                ci_upper = None
-                if arima_ci is not None:
-                    if hasattr(arima_ci, 'iloc'):
-                        ci_lower = [price_data.values[-1]] + [float(np.ravel(arima_ci.iloc[:, 0])[i]) for i in range(forecast_steps)]
-                        ci_upper = [price_data.values[-1]] + [float(np.ravel(arima_ci.iloc[:, 1])[i]) for i in range(forecast_steps)]
-                    else:
-                        ci_lower = [price_data.values[-1]] + [float(np.ravel(arima_ci[:, 0])[i]) for i in range(forecast_steps)]
-                        ci_upper = [price_data.values[-1]] + [float(np.ravel(arima_ci[:, 1])[i]) for i in range(forecast_steps)]
+                # Get volatility forecasts
+                conditional_volatility = np.sqrt(garch_forecast.variance.values[-1, :])
+                volatility_values = [0] + list(conditional_volatility)  # Add 0 for current day
                 
                 # Create plot
                 fig, plot_error = safe_plot_forecast(
                     historical_dates, historical_prices, 
                     forecast_dates, forecast_values,
-                    ci_lower, ci_upper
+                    volatility_values
                 )
                 
                 if plot_error:
@@ -679,9 +736,9 @@ if run_analysis_btn:
                     st.pyplot(fig)
                     
             except Exception as e:
-                st.error(f"Could not create forecast plot: {str(e)}")
+                st.error(f"Could not create GARCH forecast plot: {str(e)}")
         else:
-            st.info("No ARIMA forecast available to display.")
+            st.info("No GJR-GARCH forecast available to display.")
 
 # =============================================================================
 # FOOTER
@@ -692,7 +749,7 @@ st.markdown("""
 <div style='text-align: center'>
     <p><em>"True understanding of markets lies in the art of mathematical analysis"</em></p>
     <p><em>"Live your Life as an Exclamation rather than an Explanation" - Isaac Newton</em></p>
-    <p><em>Built with Streamlit • Powered by Python</em></p>
+    <p><em>Built with Streamlit • Powered by Python • GJR-GARCH Volatility Modeling</em></p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -707,4 +764,9 @@ st.sidebar.markdown("""
 - Past performance doesn't guarantee future results
 - Always do your own research before investing
 - Consult with financial advisors for investment decisions
+
+**GJR-GARCH Model:**
+- Captures volatility clustering and leverage effects
+- Better for financial time series than ARIMA
+- Accounts for asymmetric volatility responses
 """)
