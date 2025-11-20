@@ -1,4 +1,7 @@
 # streamlit_app.py
+# Created by Gokul Thanigaivasan
+# Advanced Stock Forecasting Platform with Polynomial Regression + GJR-GARCH
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -29,7 +32,7 @@ except ImportError:
 # =============================================================================
 
 st.set_page_config(
-    page_title="📈 மார்க்கெட்டில் லாபம் வந்தாலும் நஷ்டம் வந்தாலும் கணக்கை பார்த்தால் ஒரே result - Zero balance",
+    page_title="📈 Advanced Stock Forecasting Platform",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -57,6 +60,16 @@ st.markdown("""
         border-radius: 10px;
         border-left: 4px solid #1f77b4;
     }
+    .creator-credit {
+        text-align: center;
+        font-size: 1.1rem;
+        color: #1f77b4;
+        margin-top: 2rem;
+        padding: 1rem;
+        background-color: #f8f9fa;
+        border-radius: 10px;
+        border: 2px solid #1f77b4;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -64,16 +77,26 @@ st.markdown("""
 # TITLE AND DESCRIPTION
 # =============================================================================
 
-st.markdown('<div class="main-header">மார்க்கெட்டில் லாபம் வந்தாலும் நஷ்டம் வந்தாலும் கணக்கை பார்த்தால் ஒரே result - Zero balance</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">Advanced Hybrid Stock Forecasting Platform</div>', unsafe_allow_html=True)
+
+st.markdown('<div class="creator-credit">👨‍💻 Created by <strong>Gokul Thanigaivasan</strong></div>', unsafe_allow_html=True)
 
 with st.expander("📖 About this App", expanded=False):
     st.markdown("""
+    **Created by:** Gokul Thanigaivasan
+    
     **Features:**
     - 📊 Polynomial Regression + GJR-GARCH hybrid modeling
     - 🔍 Comprehensive statistical testing
     - 📈 Multi-timeframe analysis and forecasting
     - 💹 Volatility modeling with GJR-GARCH
     - 🎯 Interactive parameter tuning
+    
+    **Investment Disclaimer:**
+    - This tool is for educational purposes only
+    - Past performance doesn't guarantee future results
+    - Always do your own research before investing
+    - Consult with financial advisors for investment decisions
     """)
 
 # =============================================================================
@@ -104,7 +127,7 @@ with col2:
 
 # Price Type Selection
 st.sidebar.subheader("Price Configuration")
-price_type = st.sidebar.selectbox("Dependent Price (Y)", ["Close", "High", "Low", "Open", "Adj Close"])
+price_type = st.sidebar.selectbox("Price Type", ["Close", "High", "Low", "Open", "Adj Close"])
 
 # Model Parameters
 st.sidebar.subheader("Model Parameters")
@@ -174,37 +197,54 @@ def calculate_returns(prices):
         return None
 
 def create_garch_forecast_plot(historical_dates, historical_prices, forecast_dates, price_forecasts, volatility_forecasts):
-    """Create GARCH forecast visualization"""
+    """Create GARCH forecast visualization with proper array handling"""
     try:
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
         
         # Plot 1: Price forecast
-        ax1.plot(historical_dates, historical_prices, label='Historical Prices', 
-               linewidth=2, color='blue')
+        # Use only last 30 days for cleaner visualization
+        plot_days = min(30, len(historical_dates))
+        recent_dates = historical_dates[-plot_days:]
+        recent_prices = historical_prices[-plot_days:]
         
-        # Combine historical last point with forecasts for smooth line
-        all_dates = [historical_dates[-1]] + forecast_dates
-        all_prices = [historical_prices[-1]] + price_forecasts
+        ax1.plot(recent_dates, recent_prices, label='Historical Prices', 
+               linewidth=2, color='blue', alpha=0.8)
         
-        ax1.plot(all_dates, all_prices, label='Price Forecast', 
-               linewidth=2, marker='o', color='red')
+        # Plot forecast - ensure simple data types
+        forecast_dates_list = list(forecast_dates)
+        price_forecasts_list = [float(x) for x in price_forecasts]
+        
+        # Connect last historical point to first forecast point
+        connection_dates = [recent_dates[-1], forecast_dates_list[0]]
+        connection_prices = [recent_prices[-1], price_forecasts_list[0]]
+        
+        ax1.plot(connection_dates, connection_prices, 'k--', alpha=0.5)
+        ax1.plot(forecast_dates_list, price_forecasts_list, 
+               label='Price Forecast', linewidth=2, marker='o', color='red', markersize=6)
         
         ax1.set_title("GJR-GARCH Price Forecast", fontsize=14, fontweight='bold')
-        ax1.set_ylabel("Price", fontweight='bold')
+        ax1.set_ylabel(f"Price ({detect_currency('^NSEI')})", fontweight='bold')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         plt.sca(ax1)
         plt.xticks(rotation=45)
         
         # Plot 2: Volatility forecast
-        ax2.bar(range(len(volatility_forecasts)), volatility_forecasts, 
-               color='orange', alpha=0.7, label='Volatility Forecast')
+        volatility_list = [float(v) for v in volatility_forecasts]
+        days = list(range(1, len(volatility_list) + 1))
+        
+        bars = ax2.bar(days, volatility_list, color='orange', alpha=0.7, label='Volatility Forecast')
+        
+        # Add value labels on bars
+        for bar, value in zip(bars, volatility_list):
+            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.05,
+                   f'{value:.2f}%', ha='center', va='bottom', fontweight='bold')
         
         ax2.set_title("GJR-GARCH Volatility Forecast", fontsize=14, fontweight='bold')
         ax2.set_ylabel("Volatility (%)", fontweight='bold')
         ax2.set_xlabel("Forecast Days", fontweight='bold')
-        ax2.set_xticks(range(len(volatility_forecasts)))
-        ax2.set_xticklabels([f'Day {i+1}' for i in range(len(volatility_forecasts))])
+        ax2.set_xticks(days)
+        ax2.set_xticklabels([f'Day {i}' for i in days])
         ax2.legend()
         ax2.grid(True, alpha=0.3)
         
@@ -213,6 +253,52 @@ def create_garch_forecast_plot(historical_dates, historical_prices, forecast_dat
         
     except Exception as e:
         return None, f"Plotting failed: {str(e)}"
+
+def safe_forecast_generation(garch_model, current_price, returns, forecast_steps=5):
+    """Safely generate forecasts from GARCH model"""
+    try:
+        # Generate forecasts
+        forecast = garch_model.forecast(horizon=forecast_steps)
+        
+        # Get variance forecasts
+        if hasattr(forecast, 'variance'):
+            variance_forecasts = forecast.variance.iloc[-1].values
+        else:
+            # Alternative approach
+            variance_forecasts = np.array([forecast.conditional_volatility.iloc[-1]**2] * forecast_steps)
+        
+        # Calculate volatility (standard deviation)
+        volatility_forecasts = np.sqrt(variance_forecasts)
+        
+        # Generate price forecasts using volatility
+        price_forecasts = []
+        current_price_forecast = current_price
+        
+        # Use the last return as a base (dampened)
+        last_return = returns.iloc[-1] if len(returns) > 0 else 0
+        
+        for i in range(forecast_steps):
+            # Create realistic price movement based on volatility
+            volatility = volatility_forecasts[i]
+            # Scale the random component by volatility
+            random_component = np.random.normal(last_return * 0.2, volatility * 0.8)
+            daily_return = random_component / 100
+            
+            next_price = current_price_forecast * (1 + daily_return)
+            price_forecasts.append(float(next_price))
+            current_price_forecast = next_price
+        
+        return {
+            'price_forecasts': price_forecasts,
+            'volatility_forecasts': volatility_forecasts.tolist(),
+            'success': True
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
 
 # =============================================================================
 # MAIN ANALYSIS LOGIC
@@ -366,6 +452,8 @@ if run_analysis_btn:
     # Calculate returns for GARCH modeling
     returns = calculate_returns(price_data)
     
+    forecast_data_stored = None
+    
     if returns is not None and len(returns) > 50:
         try:
             # Fit GJR-GARCH model
@@ -376,7 +464,6 @@ if run_analysis_btn:
             
             if garch_error:
                 st.error(f"GJR-GARCH modeling failed: {garch_error}")
-                garch_forecast = None
             else:
                 # Display model summary
                 st.subheader("🏆 GJR-GARCH Model Summary")
@@ -399,49 +486,15 @@ if run_analysis_btn:
                 
                 # Generate forecasts
                 forecast_steps = 5
-                try:
-                    garch_forecast = garch_model.forecast(horizon=forecast_steps)
-                    
-                    # Get volatility forecasts (standard deviation)
-                    if hasattr(garch_forecast, 'variance'):
-                        conditional_volatility = np.sqrt(garch_forecast.variance.iloc[-1].values)
-                    else:
-                        # Alternative method to get variance
-                        conditional_volatility = np.sqrt(garch_forecast.residual_variance.iloc[-1])
-                    
-                    # Create realistic price forecasts using volatility
-                    price_forecasts = []
-                    current_forecast_price = current_price
-                    
-                    # Use the last return as base, dampened
-                    last_return = returns.iloc[-1] if len(returns) > 0 else 0
-                    
-                    for i in range(forecast_steps):
-                        # Generate realistic price movement based on volatility
-                        vol_scaled = conditional_volatility[i] if i < len(conditional_volatility) else conditional_volatility[-1]
-                        random_return = np.random.normal(last_return * 0.3, vol_scaled)
-                        daily_return_pct = random_return / 100
-                        
-                        next_price = current_forecast_price * (1 + daily_return_pct)
-                        price_forecasts.append(float(next_price))
-                        current_forecast_price = next_price
-                    
-                    # Ensure volatility is properly formatted
-                    if isinstance(conditional_volatility, (pd.Series, pd.DataFrame)):
-                        volatility_forecasts = conditional_volatility.values.flatten().tolist()
-                    else:
-                        volatility_forecasts = conditional_volatility.flatten().tolist()
-                    
-                    # Ensure we have exactly forecast_steps values
-                    if len(volatility_forecasts) > forecast_steps:
-                        volatility_forecasts = volatility_forecasts[:forecast_steps]
-                    elif len(volatility_forecasts) < forecast_steps:
-                        volatility_forecasts = volatility_forecasts + [volatility_forecasts[-1]] * (forecast_steps - len(volatility_forecasts))
+                forecast_result = safe_forecast_generation(garch_model, current_price, returns, forecast_steps)
+                
+                if forecast_result['success']:
+                    price_forecasts = forecast_result['price_forecasts']
+                    volatility_forecasts = forecast_result['volatility_forecasts']
+                    forecast_dates = [price_data.index[-1] + timedelta(days=i) for i in range(1, forecast_steps + 1)]
                     
                     # Display GJR-GARCH forecast
                     st.subheader("📅 GJR-GARCH 5-Day Forecast")
-                    forecast_dates = [price_data.index[-1] + timedelta(days=i) for i in range(1, forecast_steps + 1)]
-                    
                     forecast_data = []
                     for i in range(forecast_steps):
                         forecast_price = price_forecasts[i]
@@ -486,17 +539,13 @@ if run_analysis_btn:
                         'volatility_forecasts': volatility_forecasts,
                         'forecast_dates': forecast_dates
                     }
-                    
-                except Exception as forecast_error:
-                    st.error(f"Forecast generation failed: {str(forecast_error)}")
-                    forecast_data_stored = None
+                else:
+                    st.error(f"Forecast generation failed: {forecast_result['error']}")
                     
         except Exception as e:
             st.error(f"GJR-GARCH analysis failed: {str(e)}")
-            forecast_data_stored = None
     else:
-        st.warning("Insufficient return data for GJR-GARCH modeling.")
-        forecast_data_stored = None
+        st.warning("Insufficient return data for GJR-GARCH modeling. Need at least 50 data points.")
     
     progress_bar.progress(90)
     
@@ -602,15 +651,10 @@ if run_analysis_btn:
     with tab4:
         if forecast_data_stored is not None:
             try:
-                # Historical data (last 60 days)
-                plot_days = min(60, len(price_data))
-                historical_dates = price_data.index[-plot_days:]
-                historical_prices = price_data.values[-plot_days:]
-                
                 # Create GARCH forecast plot
                 fig, plot_error = create_garch_forecast_plot(
-                    historical_dates, 
-                    historical_prices,
+                    price_data.index, 
+                    price_data.values,
                     forecast_data_stored['forecast_dates'],
                     forecast_data_stored['price_forecasts'],
                     forecast_data_stored['volatility_forecasts']
@@ -634,5 +678,6 @@ st.markdown("---")
 st.markdown("""
 <div style='text-align: center'>
     <p><em>Built with Streamlit • Powered by Python • GJR-GARCH Volatility Modeling</em></p>
+    <p><strong>Created by Gokul Thanigaivasan</strong></p>
 </div>
 """, unsafe_allow_html=True)
