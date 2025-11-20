@@ -64,7 +64,7 @@ st.markdown("""
 # TITLE AND DESCRIPTION
 # =============================================================================
 
-st.markdown('<div class="main-header">Advanced Hybrid Stock Forecasting Platform</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">மார்க்கெட்டில் லாபம் வந்தாலும் நஷ்டம் வந்தாலும் கணக்கை பார்த்தால் ஒரே result - Zero balance</div>', unsafe_allow_html=True)
 
 with st.expander("📖 About this App", expanded=False):
     st.markdown("""
