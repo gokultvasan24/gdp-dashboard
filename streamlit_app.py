@@ -95,8 +95,8 @@ with st.expander("📖 About this App", expanded=False):
 
 st.sidebar.header("🔧 Configuration Panel")
 
-# Stock Selection
-ticker = st.sidebar.text_input("Stock Ticker", "AAPL").upper()
+# Stock Selection with default ^NSEI (Nifty 50)
+ticker = st.sidebar.text_input("Stock Ticker", "^NSEI").upper()
 
 # Date Range
 col1, col2 = st.sidebar.columns(2)
@@ -131,13 +131,13 @@ p_range = st.sidebar.slider("AR Order (p) Range", 0, 3, (0, 2))
 d_range = st.sidebar.slider("Differencing (d) Range", 0, 2, (0, 1))
 q_range = st.sidebar.slider("MA Order (q) Range", 0, 3, (0, 2))
 
-# Forecast Input
+# Forecast Input with default 26100
 st.sidebar.subheader("Forecast Input")
 today_open_input = st.sidebar.number_input(
     "Today's Open Price",
-    value=100.0,
+    value=26100.0,
     min_value=0.0,
-    step=0.1,
+    step=100.0,
     help="Enter the current open price for prediction"
 )
 
@@ -160,7 +160,7 @@ def download_stock_data(ticker, start_date, end_date):
 
 def detect_currency(ticker):
     """Detect currency based on ticker symbols"""
-    indian_indicators = ['.NS', '.BO', '.NSE', '.BSE']
+    indian_indicators = ['.NS', '.BO', '.NSE', '.BSE', '^NSEI', 'NIFTY']
     if any(indicator in ticker.upper() for indicator in indian_indicators):
         return "₹"
     else:
@@ -184,7 +184,11 @@ def create_performance_metrics(y_true, y_pred, currency_symbol):
     rmse = float(np.sqrt(mean_squared_error(y_true_flat, y_pred_flat)))
     r2 = float(r2_score(y_true_flat, y_pred_flat))
     mae = float(np.mean(np.abs(y_true_flat - y_pred_flat)))
-    mape = float(np.mean(np.abs((y_true_flat - y_pred_flat) / np.where(y_true_flat != 0, y_true_flat, 1))) * 100)
+    
+    # Safe MAPE calculation
+    with np.errstate(divide='ignore', invalid='ignore'):
+        mape = np.mean(np.abs((y_true_flat - y_pred_flat) / np.where(y_true_flat != 0, y_true_flat, 1))) * 100
+    mape = float(mape) if np.isfinite(mape) else float(0)
     
     return {
         'RMSE': f"{currency_symbol}{rmse:.4f}",
@@ -226,6 +230,41 @@ def safe_stat_test(test_func, data, test_name=""):
         return test_func(data_clean), None
     except Exception as e:
         return None, f"{test_name} failed: {str(e)}"
+
+def safe_plot_forecast(historical_dates, historical_prices, forecast_dates, forecast_values, ci_lower=None, ci_upper=None):
+    """Safe plotting function for forecasts"""
+    try:
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        # Plot historical data
+        ax.plot(historical_dates, historical_prices, label='Historical', 
+               linewidth=2, color='blue')
+        
+        # Plot forecast - ensure proper array shapes
+        forecast_dates_flat = list(forecast_dates)
+        forecast_values_flat = [float(x) for x in np.ravel(forecast_values)]
+        
+        ax.plot(forecast_dates_flat, forecast_values_flat, label='Forecast', 
+               linewidth=2, marker='o', color='red')
+        
+        # Plot confidence interval if provided
+        if ci_lower is not None and ci_upper is not None:
+            ci_lower_flat = [float(x) for x in np.ravel(ci_lower)]
+            ci_upper_flat = [float(x) for x in np.ravel(ci_upper)]
+            
+            ax.fill_between(forecast_dates_flat, ci_lower_flat, ci_upper_flat, 
+                          alpha=0.3, color='red', label='95% Confidence Interval')
+        
+        ax.set_title("ARIMA Forecast with Confidence Intervals")
+        ax.set_ylabel("Price")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        return fig, None
+        
+    except Exception as e:
+        return None, f"Plotting failed: {str(e)}"
 
 # =============================================================================
 # MAIN ANALYSIS LOGIC
@@ -288,14 +327,18 @@ if run_analysis_btn:
         st.metric("Currency", currency_symbol)
     
     # Price chart
-    fig, ax = plt.subplots(figsize=(12, 4))
-    ax.plot(price_data.index, price_data.values, linewidth=1, alpha=0.8, color='steelblue')
-    ax.set_title(f"{ticker} {price_type} Price History")
-    ax.set_ylabel(f"Price ({currency_symbol})")
-    ax.grid(True, alpha=0.3)
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    st.pyplot(fig)
+    try:
+        fig, ax = plt.subplots(figsize=(12, 4))
+        ax.plot(price_data.index, price_data.values, linewidth=1, alpha=0.8, color='steelblue')
+        ax.set_title(f"{ticker} {price_type} Price History")
+        ax.set_ylabel(f"Price ({currency_symbol})")
+        ax.grid(True, alpha=0.3)
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        st.pyplot(fig)
+    except Exception as e:
+        st.warning(f"Could not display price chart: {str(e)}")
+    
     progress_bar.progress(50)
     
     # =============================================================================
@@ -306,61 +349,66 @@ if run_analysis_btn:
     
     status_text.text("🔮 Running polynomial regression...")
     
-    # Prepare features - ensure proper array shapes
-    dates = np.array([d.toordinal() for d in price_data.index]).reshape(-1, 1).astype(float)
-    dates_mean = float(dates.mean())
-    dates_range = float(dates.max() - dates.min())
-    
-    if dates_range == 0:
-        st.error("All dates are identical. Please check date range.")
+    try:
+        # Prepare features - ensure proper array shapes
+        dates = np.array([d.toordinal() for d in price_data.index]).reshape(-1, 1).astype(float)
+        dates_mean = float(dates.mean())
+        dates_range = float(dates.max() - dates.min())
+        
+        if dates_range == 0:
+            st.error("All dates are identical. Please check date range.")
+            st.stop()
+        
+        X = (dates - dates_mean) / dates_range
+        y = price_data.values.astype(float)
+        
+        # Ensure y is 1D
+        y_flat = np.ravel(y)
+        
+        # Polynomial regression
+        poly = PolynomialFeatures(degree=degree, include_bias=False)
+        X_poly = poly.fit_transform(X)
+        model = LinearRegression()
+        model.fit(X_poly, y_flat)
+        y_pred = model.predict(X_poly)
+        
+        # Ensure predictions are 1D
+        y_pred_flat = np.ravel(y_pred)
+        
+        # Performance metrics
+        metrics = create_performance_metrics(y_flat, y_pred_flat, currency_symbol)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("RMSE", metrics['RMSE'])
+        col2.metric("R² Score", metrics['R²'])
+        col3.metric("MAE", metrics['MAE'])
+        col4.metric("MAPE", metrics['MAPE'])
+        
+        # Forecast next day
+        last_normalized_date = X[-1][0]
+        next_normalized_date = last_normalized_date + (1 / dates_range)
+        next_day_features = np.array([[next_normalized_date]])
+        next_day_poly = poly.transform(next_day_features)
+        next_day_pred = model.predict(next_day_poly)
+        
+        forecast_value = float(np.ravel(next_day_pred)[0])
+        price_change = forecast_value - current_price
+        percent_change = (price_change / current_price) * 100
+        
+        # Display forecast
+        st.subheader("🎯 Next Day Forecast")
+        forecast_col1, forecast_col2, forecast_col3 = st.columns(3)
+        with forecast_col1:
+            st.metric("Current Price", f"{currency_symbol}{current_price:.2f}")
+        with forecast_col2:
+            st.metric("Predicted Price", f"{currency_symbol}{forecast_value:.2f}", 
+                     f"{price_change:+.2f}")
+        with forecast_col3:
+            st.metric("Expected Change", f"{percent_change:+.2f}%")
+            
+    except Exception as e:
+        st.error(f"Polynomial regression failed: {str(e)}")
         st.stop()
-    
-    X = (dates - dates_mean) / dates_range
-    y = price_data.values.astype(float)
-    
-    # Ensure y is 1D
-    y_flat = np.ravel(y)
-    
-    # Polynomial regression
-    poly = PolynomialFeatures(degree=degree, include_bias=False)
-    X_poly = poly.fit_transform(X)
-    model = LinearRegression()
-    model.fit(X_poly, y_flat)
-    y_pred = model.predict(X_poly)
-    
-    # Ensure predictions are 1D
-    y_pred_flat = np.ravel(y_pred)
-    
-    # Performance metrics
-    metrics = create_performance_metrics(y_flat, y_pred_flat, currency_symbol)
-    
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("RMSE", metrics['RMSE'])
-    col2.metric("R² Score", metrics['R²'])
-    col3.metric("MAE", metrics['MAE'])
-    col4.metric("MAPE", metrics['MAPE'])
-    
-    # Forecast next day
-    last_normalized_date = X[-1][0]
-    next_normalized_date = last_normalized_date + (1 / dates_range)
-    next_day_features = np.array([[next_normalized_date]])
-    next_day_poly = poly.transform(next_day_features)
-    next_day_pred = model.predict(next_day_poly)
-    
-    forecast_value = float(np.ravel(next_day_pred)[0])
-    price_change = forecast_value - current_price
-    percent_change = (price_change / current_price) * 100
-    
-    # Display forecast
-    st.subheader("🎯 Next Day Forecast")
-    forecast_col1, forecast_col2, forecast_col3 = st.columns(3)
-    with forecast_col1:
-        st.metric("Current Price", f"{currency_symbol}{current_price:.2f}")
-    with forecast_col2:
-        st.metric("Predicted Price", f"{currency_symbol}{forecast_value:.2f}", 
-                 f"{price_change:+.2f}")
-    with forecast_col3:
-        st.metric("Expected Change", f"{percent_change:+.2f}%")
     
     progress_bar.progress(70)
     
@@ -403,33 +451,44 @@ if run_analysis_btn:
         col2.metric("AIC", f"{best_arima['AIC']:.2f}")
         col3.metric("BIC", f"{best_arima['BIC']:.2f}")
         
-        # ARIMA forecast
-        forecast_steps = 5
-        arima_forecast = best_arima['model'].get_forecast(steps=forecast_steps)
-        arima_pred = arima_forecast.predicted_mean
-        arima_ci = arima_forecast.conf_int()
-        
-        # Display ARIMA forecast
-        st.subheader("📅 ARIMA 5-Day Forecast")
-        forecast_dates = [price_data.index[-1] + timedelta(days=i) for i in range(1, forecast_steps + 1)]
-        
-        forecast_data = []
-        for i in range(forecast_steps):
-            forecast_value = float(np.ravel(arima_pred)[i])
-            change = forecast_value - current_price
-            change_pct = (change / current_price) * 100
+        try:
+            # ARIMA forecast
+            forecast_steps = 5
+            arima_forecast = best_arima['model'].get_forecast(steps=forecast_steps)
+            arima_pred = arima_forecast.predicted_mean
+            arima_ci = arima_forecast.conf_int()
             
-            forecast_data.append({
-                'Day': i + 1,
-                'Date': forecast_dates[i].strftime('%Y-%m-%d'),
-                'Price': f"{currency_symbol}{forecast_value:.2f}",
-                'Change': f"{change:+.2f}",
-                'Change %': f"{change_pct:+.2f}%"
-            })
-        
-        # Display as dataframe
-        forecast_df = pd.DataFrame(forecast_data)
-        st.dataframe(forecast_df, use_container_width=True)
+            # Display ARIMA forecast
+            st.subheader("📅 ARIMA 5-Day Forecast")
+            forecast_dates = [price_data.index[-1] + timedelta(days=i) for i in range(1, forecast_steps + 1)]
+            
+            forecast_data = []
+            for i in range(forecast_steps):
+                forecast_value = float(np.ravel(arima_pred)[i])
+                change = forecast_value - current_price
+                change_pct = (change / current_price) * 100
+                
+                forecast_data.append({
+                    'Day': i + 1,
+                    'Date': forecast_dates[i].strftime('%Y-%m-%d'),
+                    'Price': f"{currency_symbol}{forecast_value:.2f}",
+                    'Change': f"{change:+.2f}",
+                    'Change %': f"{change_pct:+.2f}%"
+                })
+            
+            # Display as dataframe
+            forecast_df = pd.DataFrame(forecast_data)
+            st.dataframe(forecast_df, use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"ARIMA forecast failed: {str(e)}")
+            arima_pred = None
+            arima_ci = None
+            
+    else:
+        st.warning("No valid ARIMA models could be fitted with the current parameters.")
+        arima_pred = None
+        arima_ci = None
     
     progress_bar.progress(90)
     
@@ -530,88 +589,99 @@ if run_analysis_btn:
     tab1, tab2, tab3, tab4 = st.tabs(["Model Fit", "Residuals", "ACF/PACF", "Forecast"])
     
     with tab1:
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(price_data.index, y_flat, label='Actual', linewidth=2, alpha=0.8, color='blue')
-        ax.plot(price_data.index, y_pred_flat, label='Predicted', linestyle='--', linewidth=2, color='red')
-        ax.set_title(f"Polynomial Regression Fit (Degree {degree})")
-        ax.set_ylabel(f"Price ({currency_symbol})")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        st.pyplot(fig)
-    
-    with tab2:
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-        
-        # Residuals time series
-        ax1.plot(price_data.index, residuals, color='red', linewidth=1)
-        ax1.axhline(0, color='black', linestyle='-', alpha=0.3)
-        ax1.set_title("Residuals Over Time")
-        ax1.set_ylabel("Residual")
-        ax1.grid(True, alpha=0.3)
-        
-        # Residuals histogram
-        ax2.hist(residuals, bins=50, alpha=0.7, color='red', edgecolor='black', density=True)
-        xmin, xmax = ax2.get_xlim()
-        x = np.linspace(xmin, xmax, 100)
-        p = norm.pdf(x, np.mean(residuals), np.std(residuals))
-        ax2.plot(x, p, 'k', linewidth=2, label='Normal Distribution')
-        ax2.set_title("Residuals Distribution")
-        ax2.set_xlabel("Residual")
-        ax2.set_ylabel("Density")
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        st.pyplot(fig)
-    
-    with tab3:
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-        plot_acf(residuals, ax=ax1, lags=20, alpha=0.05)
-        ax1.set_title("Autocorrelation Function (ACF)")
-        plot_pacf(residuals, ax=ax2, lags=20, alpha=0.05)
-        ax2.set_title("Partial Autocorrelation Function (PACF)")
-        plt.tight_layout()
-        st.pyplot(fig)
-    
-    with tab4:
-        if arima_results:
+        try:
             fig, ax = plt.subplots(figsize=(12, 6))
-            
-            # Historical data (last 60 days)
-            plot_days = min(60, len(price_data))
-            historical_dates = price_data.index[-plot_days:]
-            historical_prices = price_data.values[-plot_days:]
-            
-            ax.plot(historical_dates, historical_prices, label='Historical', 
-                   linewidth=2, color='blue')
-            
-            # ARIMA forecast
-            forecast_dates = [price_data.index[-1]] + [price_data.index[-1] + timedelta(days=i) for i in range(1, forecast_steps + 1)]
-            forecast_values = [price_data.values[-1]] + [float(np.ravel(arima_pred)[i]) for i in range(forecast_steps)]
-            
-            ax.plot(forecast_dates, forecast_values, label='Forecast', 
-                   linewidth=2, marker='o', color='red')
-            
-            # Confidence interval
-            if hasattr(arima_ci, 'iloc'):
-                ci_lower = [price_data.values[-1]] + [float(np.ravel(arima_ci.iloc[:, 0])[i]) for i in range(forecast_steps)]
-                ci_upper = [price_data.values[-1]] + [float(np.ravel(arima_ci.iloc[:, 1])[i]) for i in range(forecast_steps)]
-            else:
-                ci_lower = [price_data.values[-1]] + [float(np.ravel(arima_ci[:, 0])[i]) for i in range(forecast_steps)]
-                ci_upper = [price_data.values[-1]] + [float(np.ravel(arima_ci[:, 1])[i]) for i in range(forecast_steps)]
-            
-            ax.fill_between(forecast_dates, ci_lower, ci_upper, 
-                          alpha=0.3, color='red', label='95% Confidence Interval')
-            
-            ax.set_title("ARIMA Forecast with Confidence Intervals")
+            ax.plot(price_data.index, y_flat, label='Actual', linewidth=2, alpha=0.8, color='blue')
+            ax.plot(price_data.index, y_pred_flat, label='Predicted', linestyle='--', linewidth=2, color='red')
+            ax.set_title(f"Polynomial Regression Fit (Degree {degree})")
             ax.set_ylabel(f"Price ({currency_symbol})")
             ax.legend()
             ax.grid(True, alpha=0.3)
             plt.xticks(rotation=45)
             plt.tight_layout()
             st.pyplot(fig)
+        except Exception as e:
+            st.error(f"Could not create model fit plot: {str(e)}")
+    
+    with tab2:
+        try:
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+            
+            # Residuals time series
+            ax1.plot(price_data.index, residuals, color='red', linewidth=1)
+            ax1.axhline(0, color='black', linestyle='-', alpha=0.3)
+            ax1.set_title("Residuals Over Time")
+            ax1.set_ylabel("Residual")
+            ax1.grid(True, alpha=0.3)
+            
+            # Residuals histogram
+            ax2.hist(residuals, bins=50, alpha=0.7, color='red', edgecolor='black', density=True)
+            xmin, xmax = ax2.get_xlim()
+            x = np.linspace(xmin, xmax, 100)
+            p = norm.pdf(x, np.mean(residuals), np.std(residuals))
+            ax2.plot(x, p, 'k', linewidth=2, label='Normal Distribution')
+            ax2.set_title("Residuals Distribution")
+            ax2.set_xlabel("Residual")
+            ax2.set_ylabel("Density")
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            st.pyplot(fig)
+        except Exception as e:
+            st.error(f"Could not create residuals plot: {str(e)}")
+    
+    with tab3:
+        try:
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+            plot_acf(residuals, ax=ax1, lags=20, alpha=0.05)
+            ax1.set_title("Autocorrelation Function (ACF)")
+            plot_pacf(residuals, ax=ax2, lags=20, alpha=0.05)
+            ax2.set_title("Partial Autocorrelation Function (PACF)")
+            plt.tight_layout()
+            st.pyplot(fig)
+        except Exception as e:
+            st.error(f"Could not create ACF/PACF plots: {str(e)}")
+    
+    with tab4:
+        if arima_results and arima_pred is not None:
+            try:
+                # Historical data (last 60 days)
+                plot_days = min(60, len(price_data))
+                historical_dates = price_data.index[-plot_days:]
+                historical_prices = price_data.values[-plot_days:]
+                
+                # Prepare forecast data
+                forecast_dates = [price_data.index[-1]] + [price_data.index[-1] + timedelta(days=i) for i in range(1, forecast_steps + 1)]
+                forecast_values = [price_data.values[-1]] + [float(np.ravel(arima_pred)[i]) for i in range(forecast_steps)]
+                
+                # Prepare confidence intervals
+                ci_lower = None
+                ci_upper = None
+                if arima_ci is not None:
+                    if hasattr(arima_ci, 'iloc'):
+                        ci_lower = [price_data.values[-1]] + [float(np.ravel(arima_ci.iloc[:, 0])[i]) for i in range(forecast_steps)]
+                        ci_upper = [price_data.values[-1]] + [float(np.ravel(arima_ci.iloc[:, 1])[i]) for i in range(forecast_steps)]
+                    else:
+                        ci_lower = [price_data.values[-1]] + [float(np.ravel(arima_ci[:, 0])[i]) for i in range(forecast_steps)]
+                        ci_upper = [price_data.values[-1]] + [float(np.ravel(arima_ci[:, 1])[i]) for i in range(forecast_steps)]
+                
+                # Create plot
+                fig, plot_error = safe_plot_forecast(
+                    historical_dates, historical_prices, 
+                    forecast_dates, forecast_values,
+                    ci_lower, ci_upper
+                )
+                
+                if plot_error:
+                    st.error(plot_error)
+                else:
+                    st.pyplot(fig)
+                    
+            except Exception as e:
+                st.error(f"Could not create forecast plot: {str(e)}")
+        else:
+            st.info("No ARIMA forecast available to display.")
 
 # =============================================================================
 # FOOTER
