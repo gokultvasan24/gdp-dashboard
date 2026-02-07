@@ -1,227 +1,166 @@
-# streamlit_app.py
-# Created by Gokul Thanigaivasan
-# Advanced Stock Forecasting Platform with Polynomial Regression + GJR-GARCH
-
 import streamlit as st
 import yfinance as yf
-import pandas as pd
 import numpy as np
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error, r2_score
+import pandas as pd
+import torch
+import torch.nn as nn
 import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
-from scipy.stats import jarque_bera
-from statsmodels.tsa.stattools import adfuller
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-import warnings
-warnings.filterwarnings("ignore")
 
-# Try to import ARCH models
-try:
-    from arch import arch_model
-    ARCH_AVAILABLE = True
-except ImportError:
-    ARCH_AVAILABLE = False
-    st.warning("ARCH package not available. Install using: pip install arch")
+st.set_page_config(page_title="📈 Intraday GRU Forecast", layout="wide")
 
-# =============================================================================
-# STREAMLIT CONFIG
-# =============================================================================
+# ===============================
+# CONFIG
+# ===============================
 
-st.set_page_config(
-    page_title="📈 Advanced Stock Forecasting Platform",
-    layout="wide"
-)
+DEVICE = "cpu"   # Streamlit Cloud is CPU-only
+LOOKBACK = 30
+EPOCHS = 6
+MC_PATHS = 300
+LAMBDA_EWMA = 0.94
 
-# =============================================================================
-# SIDEBAR INPUTS
-# =============================================================================
+# ===============================
+# SIDEBAR
+# ===============================
 
-st.sidebar.header("🔧 Configuration Panel")
+st.sidebar.header("⚙️ Intraday Settings")
 
-ticker = st.sidebar.text_input("Stock Ticker", "^NSEI").upper()
+ticker = st.sidebar.text_input("Ticker", "^NSEI")
+interval = st.sidebar.selectbox("Interval", ["5m", "15m"])
+run_btn = st.sidebar.button("🚀 Run Forecast")
 
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    start_date = st.date_input("Start Date", datetime(2020, 1, 1))
-with col2:
-    end_date = st.date_input("End Date", datetime.now())
+# ===============================
+# DATA
+# ===============================
 
-price_type = st.sidebar.selectbox(
-    "Price Type", ["Close", "Open", "High", "Low", "Adj Close"]
-)
+@st.cache_data(ttl=900)
+def load_data(ticker, interval):
+    return yf.download(
+        ticker,
+        period="30d",
+        interval=interval,
+        progress=False
+    )
 
-degree = st.sidebar.slider("Polynomial Degree", 1, 8, 3)
+# ===============================
+# FEATURE ENGINEERING
+# ===============================
 
-garch_p = st.sidebar.slider("GARCH p", 1, 3, 1)
-garch_q = st.sidebar.slider("GARCH q", 1, 3, 1)
-garch_o = st.sidebar.slider("GJR o", 1, 3, 1)
+def build_features(df):
+    df = df.copy()
+    df["log_return"] = np.log(df["Close"] / df["Close"].shift(1))
+    df["vol_5"] = df["log_return"].rolling(5).std()
+    df["vol_20"] = df["log_return"].rolling(20).std()
+    df["volume_z"] = (df["Volume"] - df["Volume"].rolling(20).mean()) / df["Volume"].rolling(20).std()
+    return df.dropna()
 
-run_analysis = st.sidebar.button("🚀 Run Complete Analysis", use_container_width=True)
+def make_sequences(data, lookback):
+    X, y = [], []
+    for i in range(len(data) - lookback):
+        X.append(data[i:i+lookback])
+        y.append(data[i+lookback, 0])  # predict log_return
+    return np.array(X), np.array(y)
 
-# =============================================================================
-# UTILITY FUNCTIONS
-# =============================================================================
+# ===============================
+# GRU MODEL
+# ===============================
 
-@st.cache_data(ttl=3600)
-def download_stock_data(ticker, start, end):
-    return yf.download(ticker, start=start, end=end, progress=False)
+class GRUModel(nn.Module):
+    def __init__(self, input_size):
+        super().__init__()
+        self.gru = nn.GRU(input_size, 32, batch_first=True)
+        self.fc = nn.Linear(32, 1)
 
-def detect_currency(ticker):
-    if any(x in ticker for x in ["^NSEI", ".NS", ".BO"]):
-        return "₹"
-    return "$"
+    def forward(self, x):
+        out, _ = self.gru(x)
+        return self.fc(out[:, -1])
 
-def calculate_returns(prices):
-    return prices.pct_change().dropna() * 100
+# ===============================
+# EWMA VOLATILITY
+# ===============================
 
-def fit_gjr_garch(returns, p, q, o):
-    model = arch_model(returns, vol="Garch", p=p, q=q, o=o, dist="normal")
-    return model.fit(disp="off")
+def ewma_vol(returns, lam=0.94):
+    sigma = returns.var()
+    for r in returns:
+        sigma = lam * sigma + (1 - lam) * r**2
+    return np.sqrt(sigma)
 
-# =============================================================================
-# MAIN ANALYSIS
-# =============================================================================
+# ===============================
+# MAIN
+# ===============================
 
-if run_analysis:
+if run_btn:
 
-    if not ARCH_AVAILABLE:
-        st.error("ARCH package not installed")
+    st.subheader("📊 Downloading Intraday Data")
+    data = load_data(ticker, interval)
+
+    if data.empty or len(data) < 100:
+        st.error("Not enough intraday data")
         st.stop()
 
-    data = download_stock_data(ticker, start_date, end_date)
+    feats = build_features(data)
+    feature_cols = ["log_return", "vol_5", "vol_20", "volume_z"]
+    values = feats[feature_cols].values
 
-    if data.empty or price_type not in data.columns:
-        st.error("Invalid data or price column")
-        st.stop()
+    X, y = make_sequences(values, LOOKBACK)
 
-    price_data = data[price_type].dropna()
+    X_t = torch.tensor(X, dtype=torch.float32)
+    y_t = torch.tensor(y, dtype=torch.float32).view(-1, 1)
 
-    if len(price_data) < 30:
-        st.error("Not enough data")
-        st.stop()
+    model = GRUModel(input_size=X.shape[2]).to(DEVICE)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    loss_fn = nn.MSELoss()
 
-    currency = detect_currency(ticker)
-    current_price = float(price_data.iloc[-1])
+    st.subheader("🧠 Training GRU (Fast)")
+    for epoch in range(EPOCHS):
+        optimizer.zero_grad()
+        out = model(X_t)
+        loss = loss_fn(out, y_t)
+        loss.backward()
+        optimizer.step()
 
-    # =============================================================================
-    # POLYNOMIAL REGRESSION
-    # =============================================================================
+    st.success("GRU training complete")
 
-    st.subheader("📈 Polynomial Regression")
+    # ===============================
+    # FORECAST
+    # ===============================
 
-    dates = np.array([d.toordinal() for d in price_data.index], dtype=float).reshape(-1, 1)
+    model.eval()
+    last_seq = torch.tensor(X[-1:], dtype=torch.float32)
 
-    dates_mean = dates.mean()
-    dates_range = dates.max() - dates.min()
+    with torch.no_grad():
+        mean_return = model(last_seq).item()
 
-    X = (dates - dates_mean) / dates_range
-    y = price_data.values.astype(float)
+    returns = feats["log_return"].values[-LOOKBACK:]
+    sigma = ewma_vol(returns, LAMBDA_EWMA)
 
-    poly = PolynomialFeatures(degree=degree, include_bias=False)
-    X_poly = poly.fit_transform(X)
+    last_price = data["Close"].iloc[-1]
 
-    model = LinearRegression()
-    model.fit(X_poly, y)
+    # Monte Carlo
+    prices = []
+    for _ in range(MC_PATHS):
+        shock = np.random.normal(0, sigma)
+        ret = mean_return + shock
+        prices.append(last_price * np.exp(ret))
 
-    y_pred = model.predict(X_poly)
+    prices = np.array(prices)
 
-    rmse = np.sqrt(mean_squared_error(y, y_pred))
-    r2 = r2_score(y, y_pred)
-    mae = np.mean(np.abs(y - y_pred))
+    # ===============================
+    # OUTPUT
+    # ===============================
+
+    st.subheader("🔮 Next-Bar Intraday Forecast")
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("RMSE", f"{currency}{rmse:.4f}")
-    col2.metric("R²", f"{r2:.4f}")
-    col3.metric("MAE", f"{currency}{mae:.4f}")
+    col1.metric("Current Price", f"{last_price:.2f}")
+    col2.metric("Expected Price", f"{np.mean(prices):.2f}")
+    col3.metric("Direction Confidence", f"{(prices > last_price).mean()*100:.1f}%")
 
-    # ===== FIXED SCALAR HANDLING (IMPORTANT PART) =====
-
-    last_normalized_date = float(X[-1].item())
-    next_normalized_date = last_normalized_date + (1 / dates_range)
-
-    next_day_features = np.array([[next_normalized_date]])
-    next_day_poly = poly.transform(next_day_features)
-
-    next_day_pred = model.predict(next_day_poly)
-    forecast_value = float(next_day_pred.item())
-
-    price_change = forecast_value - current_price
-    percent_change = (price_change / current_price) * 100
-
-    st.subheader("🎯 Next Day Forecast")
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Current Price", f"{currency}{current_price:.2f}")
-    c2.metric("Predicted Price", f"{currency}{forecast_value:.2f}", f"{price_change:+.2f}")
-    c3.metric("Expected Change", f"{percent_change:+.2f}%")
-
-    # =============================================================================
-    # GJR-GARCH
-    # =============================================================================
-
-    st.subheader("📊 GJR-GARCH Volatility")
-
-    returns = calculate_returns(price_data)
-
-    if len(returns) > 50:
-        garch_model = fit_gjr_garch(returns, garch_p, garch_q, garch_o)
-
-        forecast = garch_model.forecast(horizon=5)
-        variance = forecast.variance.iloc[-1].values
-        volatility = np.sqrt(variance)
-
-        forecast_prices = []
-        temp_price = current_price
-
-        for v in volatility:
-            change = np.random.normal(0, v * 0.01)
-            temp_price *= (1 + change)
-            forecast_prices.append(float(temp_price))
-
-        df = pd.DataFrame({
-            "Day": range(1, 6),
-            "Forecast Price": [f"{currency}{p:.2f}" for p in forecast_prices],
-            "Volatility (%)": [f"{v:.2f}%" for v in volatility]
-        })
-
-        st.dataframe(df, use_container_width=True)
-
-    else:
-        st.warning("Not enough data for GARCH")
-
-    # =============================================================================
-    # STATISTICAL TESTS
-    # =============================================================================
-
-    st.subheader("🔬 Statistical Tests")
-
-    residuals = y - y_pred
-
-    jb_stat, jb_p = jarque_bera(residuals)
-    adf_stat, adf_p, *_ = adfuller(residuals)
-
-    col1, col2 = st.columns(2)
-    col1.write(f"Jarque-Bera p-value: **{jb_p:.4f}**")
-    col2.write(f"ADF p-value: **{adf_p:.4f}**")
-
-    # =============================================================================
-    # VISUALS
-    # =============================================================================
-
-    st.subheader("📊 Visualizations")
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(price_data.index, y, label="Actual")
-    ax.plot(price_data.index, y_pred, linestyle="--", label="Predicted")
+    # Fan chart
+    fig, ax = plt.subplots(figsize=(10,4))
+    ax.hist(prices, bins=40, alpha=0.7)
+    ax.axvline(last_price, color="black", linestyle="--", label="Current")
+    ax.set_title("Price Distribution (Next Bar)")
     ax.legend()
-    ax.grid(True)
     st.pyplot(fig)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-    plot_acf(residuals, ax=ax1, lags=20)
-    plot_pacf(residuals, ax=ax2, lags=20)
-    st.pyplot(fig)
-
-    st.success("✅ Analysis Complete")
+    st.success("✅ Intraday GRU Forecast Complete")
