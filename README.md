@@ -14,5 +14,8 @@ A sophisticated Streamlit application for stock price analysis and forecasting u
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/stock-forecasting-app.git
-cd stock-forecasting-app
+
+git clone https://github.com/gokultvasan24/your-repo-name.git
+cd your-repo-name
+pip install -r requirements.txt
+streamlit run streamlit_app.py
