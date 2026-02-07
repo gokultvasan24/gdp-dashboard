@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 # ===============================
 
 st.set_page_config(
-    page_title="📈 Intraday Forecast (Streamlit Cloud Safe)",
+    page_title="📈 Intraday Forecast (Robust Cloud Safe)",
     layout="wide"
 )
 
@@ -18,19 +18,18 @@ st.set_page_config(
 # ===============================
 
 st.sidebar.header("⚙️ Intraday Settings")
-
 ticker = st.sidebar.text_input("Ticker", "^NSEI")
 interval = st.sidebar.selectbox("Interval", ["5m", "15m"])
 run_btn = st.sidebar.button("🚀 Run Forecast", use_container_width=True)
 
 # ===============================
-# CONSTANTS
+# CONSTANTS (MAX VALUES)
 # ===============================
 
-LOOKBACK = 30          # bars
-MC_PATHS = 300         # Monte Carlo simulations
-LAMBDA_EWMA = 0.94     # volatility decay
-RIDGE_ALPHA = 1.0     # regularization
+MAX_LOOKBACK = 30
+MC_PATHS = 300
+LAMBDA_EWMA = 0.94
+RIDGE_ALPHA = 1.0
 
 # ===============================
 # DATA LOADING
@@ -53,11 +52,17 @@ def build_features(df):
     df = df.copy()
 
     df["log_return"] = np.log(df["Close"] / df["Close"].shift(1))
-    df["vol_5"] = df["log_return"].rolling(5).std()
-    df["vol_20"] = df["log_return"].rolling(20).std()
+
+    # Adaptive rolling windows
+    vol_short = min(5, len(df) // 10)
+    vol_long = min(20, len(df) // 5)
+
+    df["vol_5"] = df["log_return"].rolling(vol_short).std()
+    df["vol_20"] = df["log_return"].rolling(vol_long).std()
+
     df["volume_z"] = (
-        (df["Volume"] - df["Volume"].rolling(20).mean())
-        / df["Volume"].rolling(20).std()
+        (df["Volume"] - df["Volume"].rolling(vol_long).mean())
+        / df["Volume"].rolling(vol_long).std()
     )
 
     return df.dropna()
@@ -88,68 +93,68 @@ def ewma_volatility(returns, lam=0.94):
     return np.sqrt(sigma)
 
 # ===============================
-# MAIN LOGIC
+# MAIN
 # ===============================
 
 if run_btn:
 
-    st.subheader("📊 Downloading Intraday Data")
+    st.subheader("📊 Loading Intraday Data")
 
     data = load_intraday_data(ticker, interval)
 
-    if data.empty or len(data) < 150:
-        st.error("❌ Not enough intraday data")
+    if data.empty or len(data) < 80:
+        st.error("❌ Not enough raw intraday data")
         st.stop()
 
     features_df = build_features(data)
 
-    feature_cols = ["log_return", "vol_5", "vol_20", "volume_z"]
+    if len(features_df) < 60:
+        st.error("❌ Too many missing values after indicators")
+        st.stop()
 
+    feature_cols = ["log_return", "vol_5", "vol_20", "volume_z"]
     features = features_df[feature_cols].values
     target = features_df["log_return"].values
 
-    X, y = make_sequences(features, target, LOOKBACK)
+    # ===============================
+    # AUTO-ADJUST LOOKBACK
+    # ===============================
 
-    if len(X) < 50:
-        st.error("❌ Not enough samples after feature engineering")
+    max_safe_lookback = min(MAX_LOOKBACK, len(features) // 3)
+    lookback = max(10, max_safe_lookback)
+
+    X, y = make_sequences(features, target, lookback)
+
+    if len(X) < 30:
+        st.error("❌ Still not enough samples for modeling")
         st.stop()
 
+    st.info(f"ℹ️ Adaptive lookback used: {lookback} bars")
+
     # ===============================
-    # MODEL FIT
+    # MODEL
     # ===============================
 
     weights = ridge_fit(X, y, RIDGE_ALPHA)
-
-    last_x = X[-1]
-    mean_return = float(last_x @ weights)
+    mean_return = float(X[-1] @ weights)
 
     # ===============================
     # VOLATILITY
     # ===============================
 
-    sigma = ewma_volatility(target[-LOOKBACK:], LAMBDA_EWMA)
-
+    sigma = ewma_volatility(target[-lookback:], LAMBDA_EWMA)
     last_price = float(data["Close"].iloc[-1])
 
     # ===============================
-    # MONTE CARLO FORECAST
+    # MONTE CARLO
     # ===============================
 
-    simulated_prices = []
-
-    for _ in range(MC_PATHS):
-        shock = np.random.normal(0, sigma)
-        next_price = last_price * np.exp(mean_return + shock)
-        simulated_prices.append(next_price)
-
-    simulated_prices = np.array(simulated_prices)
-
-    # ===============================
-    # METRICS
-    # ===============================
+    simulated_prices = last_price * np.exp(
+        mean_return + np.random.normal(0, sigma, MC_PATHS)
+    )
 
     expected_price = simulated_prices.mean()
-    direction_confidence = (simulated_prices > last_price).mean() * 100
+    up_prob = (simulated_prices > last_price).mean() * 100
 
     # ===============================
     # DISPLAY
@@ -157,24 +162,17 @@ if run_btn:
 
     st.subheader("🔮 Next-Bar Intraday Forecast")
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Current Price", f"{last_price:.2f}")
-    col2.metric("Expected Price", f"{expected_price:.2f}")
-    col3.metric("Upward Probability", f"{direction_confidence:.1f}%")
-
-    # ===============================
-    # DISTRIBUTION PLOT
-    # ===============================
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Current Price", f"{last_price:.2f}")
+    c2.metric("Expected Price", f"{expected_price:.2f}")
+    c3.metric("Upward Probability", f"{up_prob:.1f}%")
 
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.hist(simulated_prices, bins=40, alpha=0.75)
-    ax.axvline(last_price, color="black", linestyle="--", label="Current Price")
+    ax.axvline(last_price, color="black", linestyle="--")
     ax.set_title("Next-Bar Price Distribution")
-    ax.set_xlabel("Price")
-    ax.set_ylabel("Frequency")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    ax.grid(alpha=0.3)
 
     st.pyplot(fig)
 
-    st.success("✅ Intraday Forecast Completed Successfully")
+    st.success("✅ Forecast completed successfully")
