@@ -1,6 +1,10 @@
 streamlit
 yfinance
-numpy
 pandas
+numpy
+scikit-learn
 matplotlib
-torch
+scipy
+statsmodels
+arch
+pandas-ta
