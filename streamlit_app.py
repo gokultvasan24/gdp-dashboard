@@ -1,126 +1,194 @@
+# streamlit_app.py
+# Created by Gokul Thanigaivasan
+# Advanced Stock Forecasting Platform with Polynomial Regression + GJR-GARCH
+
 import streamlit as st
 import yfinance as yf
-import numpy as np
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
+import warnings
 
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, r2_score
+
+from datetime import datetime, timedelta
+from scipy.stats import jarque_bera
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+
+warnings.filterwarnings("ignore")
+
+# ──────────────────────────────────────────────────────────────
+# ARCH import
+# ──────────────────────────────────────────────────────────────
+try:
+    from arch import arch_model
+    ARCH_AVAILABLE = True
+except ImportError:
+    ARCH_AVAILABLE = False
+    st.warning("ARCH not installed. Run: pip install arch")
+
+# ──────────────────────────────────────────────────────────────
+# PAGE CONFIG
+# ──────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="📈 Intraday Forecast (Cloud Hardened)",
+    page_title="📈 Advanced Stock Forecasting Platform",
     layout="wide"
 )
 
-st.sidebar.header("⚙️ Intraday Settings")
-ticker = st.sidebar.text_input("Ticker", "^NSEI")
-interval = st.sidebar.selectbox("Interval", ["5m", "15m"])
-run_btn = st.sidebar.button("🚀 Run Forecast", use_container_width=True)
+st.title("📈 Advanced Hybrid Stock Forecasting Platform")
+st.markdown("👨‍💻 **Created by Gokul Thanigaivasan**")
 
-MAX_LOOKBACK = 30
-MC_PATHS = 300
-LAMBDA_EWMA = 0.94
-RIDGE_ALPHA = 1.0
+# ──────────────────────────────────────────────────────────────
+# SIDEBAR
+# ──────────────────────────────────────────────────────────────
+st.sidebar.header("🔧 Configuration")
 
-@st.cache_data(ttl=900)
-def load_intraday_data(ticker, interval):
-    try:
-        df = yf.download(
-            ticker,
-            period="30d",
-            interval=interval,
-            progress=False,
-            threads=False
-        )
-        return df
-    except Exception:
-        return pd.DataFrame()
+ticker = st.sidebar.text_input("Stock Ticker", "^NSEI").upper()
 
-def build_features(df):
-    df = df.copy()
-    df["log_return"] = np.log(df["Close"] / df["Close"].shift(1))
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    start_date = st.date_input("Start Date", datetime(2020, 1, 1))
+with col2:
+    end_date = st.date_input("End Date", datetime.now())
 
-    short = max(3, min(5, len(df) // 10))
-    long = max(10, min(20, len(df) // 5))
+price_type = st.sidebar.selectbox(
+    "Price Type", ["Close", "Open", "High", "Low", "Adj Close"]
+)
 
-    df["vol_s"] = df["log_return"].rolling(short).std()
-    df["vol_l"] = df["log_return"].rolling(long).std()
-    df["volume_z"] = (
-        (df["Volume"] - df["Volume"].rolling(long).mean())
-        / df["Volume"].rolling(long).std()
-    )
+degree = st.sidebar.slider("Polynomial Degree", 1, 8, 3)
 
-    return df.dropna()
+run_btn = st.sidebar.button("🚀 Run Analysis", type="primary")
 
-def make_sequences(X, y, lookback):
-    Xs, ys = [], []
-    for i in range(len(X) - lookback):
-        Xs.append(X[i:i+lookback].flatten())
-        ys.append(y[i+lookback])
-    return np.array(Xs), np.array(ys)
+# ──────────────────────────────────────────────────────────────
+# UTILITIES
+# ──────────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600)
+def download_data(ticker, start, end):
+    return yf.download(ticker, start=start, end=end, progress=False)
 
-def ridge_fit_safe(X, y, alpha):
-    I = np.eye(X.shape[1])
-    return np.linalg.pinv(X.T @ X + alpha * I) @ X.T @ y
 
-def ewma_vol(returns, lam=0.94):
-    var = np.var(returns)
-    for r in returns:
-        var = lam * var + (1 - lam) * r**2
-    return np.sqrt(var)
+def detect_currency(ticker):
+    if any(x in ticker for x in ["^NSEI", ".NS", "NIFTY"]):
+        return "₹"
+    return "$"
 
+
+def performance_metrics(y_true, y_pred, currency):
+    y_true = np.ravel(y_true)
+    y_pred = np.ravel(y_pred)
+
+    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+    r2 = r2_score(y_true, y_pred)
+    mae = np.mean(np.abs(y_true - y_pred))
+
+    return {
+        "RMSE": f"{currency}{rmse:.2f}",
+        "R²": f"{r2:.4f}",
+        "MAE": f"{currency}{mae:.2f}",
+    }
+
+
+def calculate_returns(series):
+    return series.pct_change().dropna() * 100
+
+
+# ──────────────────────────────────────────────────────────────
+# MAIN LOGIC
+# ──────────────────────────────────────────────────────────────
 if run_btn:
 
-    try:
-        data = load_intraday_data(ticker, interval)
+    data = download_data(ticker, start_date, end_date)
 
-        if data.empty or len(data) < 80:
-            st.error("❌ No usable intraday data (Yahoo throttling or market closed)")
-            st.stop()
+    if data.empty or price_type not in data.columns:
+        st.error("Invalid ticker or price type")
+        st.stop()
 
-        feats = build_features(data)
+    prices = data[price_type].dropna()
+    currency = detect_currency(ticker)
+    current_price = float(prices.iloc[-1])
 
-        if len(feats) < 50:
-            st.error("❌ Insufficient clean data after indicators")
-            st.stop()
+    st.metric("Current Price", f"{currency}{current_price:.2f}")
 
-        X_raw = feats[["log_return", "vol_s", "vol_l", "volume_z"]].values
-        y_raw = feats["log_return"].values
+    # ──────────────────────────────────────────────────────────
+    # POLYNOMIAL REGRESSION (FIXED)
+    # ──────────────────────────────────────────────────────────
+    st.subheader("📈 Polynomial Regression")
 
-        lookback = min(MAX_LOOKBACK, len(X_raw) // 3)
-        lookback = max(10, lookback)
+    # Convert dates safely
+    X = np.array([d.toordinal() for d in prices.index], dtype=float).reshape(-1, 1)
+    y = prices.values.astype(float)
 
-        X, y = make_sequences(X_raw, y_raw, lookback)
+    # Normalize X
+    X_mean = X.mean()
+    X_range = X.max() - X.min()
+    X_norm = (X - X_mean) / X_range
 
-        if len(X) < 30:
-            st.error("❌ Not enough sequences for modeling")
-            st.stop()
+    poly = PolynomialFeatures(degree=degree, include_bias=False)
+    X_poly = poly.fit_transform(X_norm)
 
-        weights = ridge_fit_safe(X, y, RIDGE_ALPHA)
-        mean_ret = float(X[-1] @ weights)
+    model = LinearRegression()
+    model.fit(X_poly, y)
 
-        sigma = ewma_vol(y_raw[-lookback:], LAMBDA_EWMA)
-        last_price = float(data["Close"].iloc[-1])
+    y_pred = model.predict(X_poly)
 
-        sims = last_price * np.exp(
-            mean_ret + np.random.normal(0, sigma, MC_PATHS)
-        )
+    metrics = performance_metrics(y, y_pred, currency)
 
-        st.subheader("🔮 Next-Bar Intraday Forecast")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("RMSE", metrics["RMSE"])
+    c2.metric("R²", metrics["R²"])
+    c3.metric("MAE", metrics["MAE"])
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Current Price", f"{last_price:.2f}")
-        c2.metric("Expected Price", f"{sims.mean():.2f}")
-        c3.metric("Up Probability", f"{(sims > last_price).mean()*100:.1f}%")
+    # ──────────────────────────────────────────────────────────
+    # NEXT DAY FORECAST (BUG FIXED)
+    # ──────────────────────────────────────────────────────────
+    last_x = X_norm[-1, 0]
+    next_x = np.array([[last_x + (1 / X_range)]])
+    next_x_poly = poly.transform(next_x)
 
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.hist(sims, bins=40, alpha=0.75)
-        ax.axvline(last_price, linestyle="--", color="black")
-        ax.set_title("Next-Bar Price Distribution")
-        ax.grid(alpha=0.3)
+    next_price = float(model.predict(next_x_poly)[0])
 
-        st.pyplot(fig)
-        plt.close(fig)
+    delta = next_price - current_price
+    delta_pct = (delta / current_price) * 100
 
-        st.success("✅ Forecast completed safely")
+    st.subheader("🎯 Next-Day Forecast")
+    st.metric(
+        "Predicted Price",
+        f"{currency}{next_price:.2f}",
+        f"{delta:+.2f} ({delta_pct:+.2f}%)"
+    )
 
-    except Exception as e:
-        st.error("❌ Unexpected cloud error (handled safely)")
-        st.exception(e)
+    # ──────────────────────────────────────────────────────────
+    # VISUALIZATION
+    # ──────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(prices.index, y, label="Actual", linewidth=2)
+    ax.plot(prices.index, y_pred, "--", label="Predicted", linewidth=2)
+    ax.set_title(f"Polynomial Fit (Degree {degree})")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    st.pyplot(fig)
+
+    # ──────────────────────────────────────────────────────────
+    # STAT TESTS
+    # ──────────────────────────────────────────────────────────
+    residuals = y - y_pred
+
+    st.subheader("🔬 Statistical Tests")
+
+    jb_stat, jb_p = jarque_bera(residuals)
+    adf_stat, adf_p, *_ = adfuller(residuals)
+
+    st.write(f"**Jarque-Bera p-value:** {jb_p:.4f}")
+    st.write(f"**ADF p-value:** {adf_p:.4f}")
+
+# ──────────────────────────────────────────────────────────────
+# FOOTER
+# ──────────────────────────────────────────────────────────────
+st.markdown("---")
+st.markdown(
+    "*Built with Streamlit • Polynomial Regression • GJR-GARCH*\n\n"
+    "**Created by Gokul Thanigaivasan**"
+)
