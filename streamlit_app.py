@@ -1,100 +1,35 @@
-# streamlit_app.py
-# 📈 Advanced Stock Forecasting Platform
-# Created by Gokul Thanigaivasan
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import warnings
 
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error, r2_score
+st.set_page_config(page_title="Advanced Stock Indicators", layout="wide")
 
-from scipy.stats import jarque_bera
-from statsmodels.tsa.stattools import adfuller
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+# ----------------------------
+# Indicator Functions
+# ----------------------------
 
-from arch import arch_model
-from datetime import datetime, timedelta
-
-warnings.filterwarnings("ignore")
-
-# ─────────────────────────────────────────────
-# PAGE CONFIG
-# ─────────────────────────────────────────────
-st.set_page_config(
-    page_title="📈 Advanced Stock Forecasting Platform",
-    layout="wide"
-)
-
-st.title("📈 Advanced Stock Forecasting Platform")
-st.markdown("👨‍💻 **Created by Gokul Thanigaivasan**")
-
-# ─────────────────────────────────────────────
-# SIDEBAR
-# ─────────────────────────────────────────────
-st.sidebar.header("🔧 Configuration")
-
-ticker = st.sidebar.text_input("Stock Ticker", "^NSEI").upper()
-
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    start_date = st.date_input("Start Date", datetime(2020, 1, 1))
-with col2:
-    end_date = st.date_input("End Date", datetime.now())
-
-price_type = st.sidebar.selectbox(
-    "Price Type", ["Close", "Open", "High", "Low", "Adj Close"]
-)
-
-degree = st.sidebar.slider("Polynomial Degree", 1, 8, 3)
-
-garch_p = st.sidebar.slider("GARCH p", 1, 3, 1)
-garch_q = st.sidebar.slider("GARCH q", 1, 3, 1)
-garch_o = st.sidebar.slider("GJR o", 1, 3, 1)
-
-run_btn = st.sidebar.button("🚀 Run Analysis", type="primary")
-
-# ─────────────────────────────────────────────
-# UTILITIES
-# ─────────────────────────────────────────────
-@st.cache_data(ttl=3600)
-def download_data(ticker, start, end):
-    return yf.download(ticker, start=start, end=end, progress=False)
-
-
-def detect_currency(ticker):
-    return "₹" if any(x in ticker for x in ["^NSEI", ".NS", "NIFTY"]) else "$"
-
-
-def calculate_returns(series):
-    return series.pct_change().dropna() * 100
-
-
-# ─────────────────────────────────────────────
-# TECHNICAL INDICATORS
-# ─────────────────────────────────────────────
 def compute_adx(df, period=14):
-    high, low, close = df["High"], df["Low"], df["Close"]
+    high = df["High"]
+    low = df["Low"]
+    close = df["Close"]
 
     plus_dm = high.diff()
     minus_dm = low.diff().abs()
 
-    plus_dm[plus_dm < 0] = 0
-    minus_dm[minus_dm < 0] = 0
+    plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
+    minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
 
-    tr = pd.concat([
-        high - low,
-        (high - close.shift()).abs(),
-        (low - close.shift()).abs()
-    ], axis=1).max(axis=1)
+    tr1 = high - low
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low - close.shift()).abs()
 
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr = tr.rolling(period).mean()
-    plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
-    minus_di = 100 * (minus_dm.rolling(period).mean() / atr)
+
+    plus_di = 100 * pd.Series(plus_dm, index=df.index).rolling(period).mean() / atr
+    minus_di = 100 * pd.Series(minus_dm, index=df.index).rolling(period).mean() / atr
 
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
     adx = dx.rolling(period).mean()
@@ -102,130 +37,114 @@ def compute_adx(df, period=14):
     return adx
 
 
-def compute_stoch_rsi(series, period=14):
+def compute_stoch_rsi(series, rsi_period=14, stoch_period=14):
     delta = series.diff()
+
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
+    avg_gain = gain.rolling(rsi_period).mean()
+    avg_loss = loss.rolling(rsi_period).mean()
 
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
 
-    stoch_rsi = (rsi - rsi.rolling(period).min()) / (
-        rsi.rolling(period).max() - rsi.rolling(period).min()
-    )
+    min_rsi = rsi.rolling(stoch_period).min()
+    max_rsi = rsi.rolling(stoch_period).max()
 
+    stoch_rsi = (rsi - min_rsi) / (max_rsi - min_rsi)
     return stoch_rsi * 100
 
 
-# ─────────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────────
-if run_btn:
+# ----------------------------
+# UI
+# ----------------------------
 
-    data = download_data(ticker, start_date, end_date)
+st.title("📈 Advanced Stock Technical Indicators")
+st.write("ADX (Trend Strength) + Stochastic RSI")
 
-    if data.empty:
-        st.error("No data found")
-        st.stop()
+with st.sidebar:
+    ticker = st.text_input("Stock Symbol", value="RELIANCE.NS")
+    start_date = st.date_input("Start Date", pd.to_datetime("2020-01-01"))
+    end_date = st.date_input("End Date", pd.to_datetime("today"))
+    period = st.slider("ADX Period", 10, 30, 14)
 
-    prices = data[price_type].dropna()
-    currency = detect_currency(ticker)
-    current_price = float(prices.iloc[-1])
+# ----------------------------
+# Data
+# ----------------------------
 
-    # ─────────────────────────────────────────
-    # POLYNOMIAL REGRESSION
-    # ─────────────────────────────────────────
-    st.subheader("📈 Polynomial Regression")
+@st.cache_data
+def load_data(ticker, start, end):
+    df = yf.download(ticker, start=start, end=end)
+    return df.dropna()
 
-    X = np.array([d.toordinal() for d in prices.index], dtype=float).reshape(-1, 1)
-    y = prices.values.astype(float)
+data = load_data(ticker, start_date, end_date)
 
-    X_norm = (X - X.mean()) / (X.max() - X.min())
+if data.empty:
+    st.error("No data found.")
+    st.stop()
 
-    poly = PolynomialFeatures(degree=degree, include_bias=False)
-    X_poly = poly.fit_transform(X_norm)
+prices = data["Close"]
 
-    model = LinearRegression()
-    model.fit(X_poly, y)
-    y_pred = model.predict(X_poly)
+# ----------------------------
+# Indicators
+# ----------------------------
 
-    next_x = np.array([[X_norm[-1, 0] + (1 / (X.max() - X.min()))]])
-    next_price = model.predict(poly.transform(next_x)).item()
+adx = compute_adx(data, period)
+stoch_rsi = compute_stoch_rsi(prices)
 
-    st.metric(
-        "Next-Day Forecast",
-        f"{currency}{next_price:.2f}",
-        f"{next_price - current_price:+.2f}"
-    )
+# ----------------------------
+# Plot
+# ----------------------------
 
-    # ─────────────────────────────────────────
-    # GJR-GARCH
-    # ─────────────────────────────────────────
-    st.subheader("📊 GJR-GARCH Volatility Forecast")
+st.subheader("📊 Technical Indicators")
 
-    returns = calculate_returns(prices)
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
 
-    garch = arch_model(
-        returns,
-        vol="Garch",
-        p=garch_p,
-        q=garch_q,
-        o=garch_o,
-        dist="normal"
-    ).fit(disp="off")
+# ADX
+ax1.plot(adx.index, adx, label="ADX", linewidth=2)
+ax1.axhline(25, linestyle="--", color="red", alpha=0.7, label="Strong Trend")
+ax1.set_ylabel("ADX")
+ax1.set_title("ADX (Trend Strength)")
+ax1.legend()
+ax1.grid(alpha=0.3)
 
-    forecast = garch.forecast(horizon=5)
-    variance = forecast.variance.iloc[-1].values
-    volatility = np.sqrt(variance)
+# Stochastic RSI
+ax2.plot(stoch_rsi.index, stoch_rsi, label="Stochastic RSI", linewidth=1.8, color="green")
+ax2.axhline(80, linestyle="--", color="red", alpha=0.6, label="Overbought")
+ax2.axhline(20, linestyle="--", color="green", alpha=0.6, label="Oversold")
+ax2.set_ylabel("Stoch RSI")
+ax2.set_ylim(0, 100)
+ax2.set_title("Stochastic RSI")
+ax2.legend()
+ax2.grid(alpha=0.3)
 
-    garch_prices = []
-    price = current_price
+plt.tight_layout()
+st.pyplot(fig)
 
-    for vol in volatility:
-        price *= (1 + np.random.normal(0, vol * 0.01))
-        garch_prices.append(price)
+# ----------------------------
+# Interpretation
+# ----------------------------
 
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(range(1, 6), garch_prices, marker="o", label="Forecast Price")
-    ax.set_title("GJR-GARCH 5-Day Price Forecast")
-    ax.set_xlabel("Days Ahead")
-    ax.set_ylabel(f"Price ({currency})")
-    ax.grid(alpha=0.3)
-    st.pyplot(fig)
+latest_adx = adx.dropna().iloc[-1]
+latest_stoch = stoch_rsi.dropna().iloc[-1]
 
-    # ─────────────────────────────────────────
-    # ADX & STOCH RSI
-    # ─────────────────────────────────────────
-    st.subheader("📉 Technical Indicators")
+st.subheader("🧠 Indicator Summary")
 
-    adx = compute_adx(data)
-    stoch_rsi = compute_stoch_rsi(prices)
+col1, col2 = st.columns(2)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+with col1:
+    st.metric("Latest ADX", f"{latest_adx:.2f}")
+    if latest_adx > 25:
+        st.success("Strong Trend Detected")
+    else:
+        st.info("Weak / Range Market")
 
-    ax1.plot(adx, label="ADX", color="blue")
-    ax1.axhline(25, linestyle="--", color="red", alpha=0.5)
-    ax1.set_title("ADX (Trend Strength)")
-    ax1.legend()
-    ax1.grid(alpha=0.3)
-
-    ax2.plot(stoch_rsi, label="Stochastic RSI", color="green")
-    ax2.axhline(80, linestyle="--", color="red", alpha=0.5)
-    ax2.axhline(20, linestyle="--", color="green", alpha=0.5)
-    ax2.set_title("Stochastic RSI")
-    ax2.legend()
-    ax2.grid(alpha=0.3)
-
-    st.pyplot(fig)
-
-# ─────────────────────────────────────────────
-# FOOTER
-# ─────────────────────────────────────────────
-st.markdown("---")
-st.markdown(
-    "*Polynomial Regression • GJR-GARCH • ADX • Stochastic RSI*\n\n"
-    "**Created by Gokul Thanigaivasan**"
-)
+with col2:
+    st.metric("Latest Stoch RSI", f"{latest_stoch:.2f}")
+    if latest_stoch > 80:
+        st.warning("Overbought")
+    elif latest_stoch < 20:
+        st.success("Oversold")
+    else:
+        st.info("Neutral Zone")
