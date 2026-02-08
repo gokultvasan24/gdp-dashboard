@@ -1,149 +1,154 @@
-streamlit_app.py
+# streamlit_app.py
+# ============================================================
+# ADVANCED QUANTITATIVE STOCK FORECASTING PLATFORM
+# Mean Model      : ARIMA
+# Volatility Model: GJR-GARCH (leverage effect)
+# No technical indicators (pure statistical modeling)
+# Author: Gokul Thanigaivasan
+# ============================================================
 
-============================================================
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 
-ADVANCED QUANTITATIVE STOCK FORECASTING PLATFORM
+from statsmodels.tsa.arima.model import ARIMA
+from arch import arch_model
+from scipy.stats import jarque_bera
 
-Mean Model      : ARIMA
+st.set_page_config(
+    page_title="Advanced Quant Forecasting",
+    layout="wide"
+)
 
-Volatility Model: GJR-GARCH (leverage effect)
-
-No technical indicators (pure statistical modeling)
-
-Author: Gokul Thanigaivasan
-
-============================================================
-
-import streamlit as st import yfinance as yf import pandas as pd import numpy as np import matplotlib.pyplot as plt
-
-from statsmodels.tsa.arima.model import ARIMA from arch import arch_model from scipy.stats import jarque_bera
-
-st.set_page_config( page_title="Advanced Quant Forecasting", layout="wide" )
-
-------------------------------------------------------------
-
-Sidebar
-
-------------------------------------------------------------
+# ------------------------------------------------------------
+# Sidebar
+# ------------------------------------------------------------
 
 st.sidebar.header("Model Configuration")
 
-ticker = st.sidebar.text_input("Ticker", "^NSEI") start_date = st.sidebar.date_input("Start Date", pd.to_datetime("2019-01-01")) end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
+ticker = st.sidebar.text_input("Ticker", "^NSEI")
+start_date = st.sidebar.date_input("Start Date", pd.to_datetime("2019-01-01"))
+end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
 
-arima_p = st.sidebar.slider("AR Order (p)", 0, 5, 1) arima_d = st.sidebar.slider("Difference (d)", 0, 2, 1) arima_q = st.sidebar.slider("MA Order (q)", 0, 5, 1)
+arima_p = st.sidebar.slider("AR Order (p)", 0, 5, 1)
+arima_d = st.sidebar.slider("Difference (d)", 0, 2, 1)
+arima_q = st.sidebar.slider("MA Order (q)", 0, 5, 1)
 
 forecast_horizon = st.sidebar.slider("Forecast Days", 5, 20, 5)
 
 run = st.sidebar.button("Run Advanced Model")
 
-------------------------------------------------------------
+# ------------------------------------------------------------
+# Main
+# ------------------------------------------------------------
 
-Main
+if run:
+    # --------------------------------------------------------
+    # Data Loading
+    # --------------------------------------------------------
+    data = yf.download(ticker, start=start_date, end=end_date, progress=False)
 
-------------------------------------------------------------
+    if data.empty:
+        st.error("No data downloaded. Check ticker or date range.")
+        st.stop()
 
-if run: # -------------------------------------------------------- # Data Loading # -------------------------------------------------------- data = yf.download(ticker, start=start_date, end=end_date, progress=False)
+    prices = data['Close'].dropna()
 
-if data.empty:
-    st.error("No data downloaded. Check ticker or date range.")
-    st.stop()
+    st.subheader("Price Series")
+    st.line_chart(prices)
 
-prices = data['Close'].dropna()
+    # --------------------------------------------------------
+    # Log Returns
+    # --------------------------------------------------------
+    log_returns = 100 * np.log(prices / prices.shift(1)).dropna()
 
-st.subheader("Price Series")
-st.line_chart(prices)
+    # --------------------------------------------------------
+    # ARIMA Mean Model
+    # --------------------------------------------------------
+    st.subheader("ARIMA Mean Model")
 
-# --------------------------------------------------------
-# Log Returns
-# --------------------------------------------------------
-log_returns = 100 * np.log(prices / prices.shift(1)).dropna()
+    arima_model = ARIMA(prices, order=(arima_p, arima_d, arima_q))
+    arima_fit = arima_model.fit()
 
-# --------------------------------------------------------
-# ARIMA Mean Model
-# --------------------------------------------------------
-st.subheader("ARIMA Mean Model")
+    arima_forecast = arima_fit.forecast(steps=forecast_horizon)
 
-arima_model = ARIMA(prices, order=(arima_p, arima_d, arima_q))
-arima_fit = arima_model.fit()
+    st.text(arima_fit.summary())
 
-arima_forecast = arima_fit.forecast(steps=forecast_horizon)
+    # --------------------------------------------------------
+    # GJR-GARCH Volatility Model
+    # --------------------------------------------------------
+    st.subheader("GJR-GARCH Volatility Model")
 
-st.text(arima_fit.summary())
+    garch = arch_model(
+        log_returns,
+        vol='Garch',
+        p=1,
+        o=1,
+        q=1,
+        dist='normal'
+    )
 
-# --------------------------------------------------------
-# GJR-GARCH Volatility Model
-# --------------------------------------------------------
-st.subheader("GJR-GARCH Volatility Model")
+    garch_fit = garch.fit(disp='off')
+    garch_forecast = garch_fit.forecast(horizon=forecast_horizon)
 
-garch = arch_model(
-    log_returns,
-    vol='Garch',
-    p=1,
-    o=1,
-    q=1,
-    dist='normal'
-)
+    vol_forecast = np.sqrt(garch_forecast.variance.iloc[-1])
 
-garch_fit = garch.fit(disp='off')
-garch_forecast = garch_fit.forecast(horizon=forecast_horizon)
+    col1, col2 = st.columns(2)
 
-vol_forecast = np.sqrt(garch_forecast.variance.iloc[-1])
+    with col1:
+        st.metric("AIC", f"{garch_fit.aic:.2f}")
+    with col2:
+        st.metric("BIC", f"{garch_fit.bic:.2f}")
 
-col1, col2 = st.columns(2)
+    # --------------------------------------------------------
+    # Combined Forecast Visualization
+    # --------------------------------------------------------
+    st.subheader("Forecast: Mean + Risk")
 
-with col1:
-    st.metric("AIC", f"{garch_fit.aic:.2f}")
-with col2:
-    st.metric("BIC", f"{garch_fit.bic:.2f}")
+    future_dates = pd.date_range(prices.index[-1], periods=forecast_horizon + 1, freq='B')[1:]
 
-# --------------------------------------------------------
-# Combined Forecast Visualization
-# --------------------------------------------------------
-st.subheader("Forecast: Mean + Risk")
+    fig, ax1 = plt.subplots(figsize=(12, 6))
 
-future_dates = pd.date_range(prices.index[-1], periods=forecast_horizon + 1, freq='B')[1:]
+    ax1.plot(prices.index, prices, label="Historical Price", color='black')
+    ax1.plot(future_dates, arima_forecast, label="ARIMA Forecast", linestyle='--', color='blue')
+    ax1.set_ylabel("Price")
+    ax1.legend(loc='upper left')
 
-fig, ax1 = plt.subplots(figsize=(12, 6))
+    ax2 = ax1.twinx()
+    ax2.plot(future_dates, vol_forecast, label="Forecast Volatility", color='red')
+    ax2.set_ylabel("Volatility (%)")
+    ax2.legend(loc='upper right')
 
-ax1.plot(prices.index, prices, label="Historical Price", color='black')
-ax1.plot(future_dates, arima_forecast, label="ARIMA Forecast", linestyle='--', color='blue')
-ax1.set_ylabel("Price")
-ax1.legend(loc='upper left')
+    plt.title("Advanced Forecast: Expected Price & Volatility")
+    plt.tight_layout()
+    st.pyplot(fig)
 
-ax2 = ax1.twinx()
-ax2.plot(future_dates, vol_forecast, label="Forecast Volatility", color='red')
-ax2.set_ylabel("Volatility (%)")
-ax2.legend(loc='upper right')
+    # --------------------------------------------------------
+    # Residual Diagnostics
+    # --------------------------------------------------------
+    st.subheader("Model Diagnostics")
 
-plt.title("Advanced Forecast: Expected Price & Volatility")
-plt.tight_layout()
-st.pyplot(fig)
+    residuals = arima_fit.resid.dropna()
+    jb_stat, jb_p = jarque_bera(residuals)
 
-# --------------------------------------------------------
-# Residual Diagnostics
-# --------------------------------------------------------
-st.subheader("Model Diagnostics")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Jarque-Bera", f"{jb_stat:.2f}")
+    with col2:
+        st.metric("Normality p-value", f"{jb_p:.4f}")
 
-residuals = arima_fit.resid.dropna()
-jb_stat, jb_p = jarque_bera(residuals)
+    if jb_p > 0.05:
+        st.success("Residuals appear normally distributed")
+    else:
+        st.warning("Residuals deviate from normality")
 
-col1, col2 = st.columns(2)
-with col1:
-    st.metric("Jarque-Bera", f"{jb_stat:.2f}")
-with col2:
-    st.metric("Normality p-value", f"{jb_p:.4f}")
+    st.success("Advanced Quantitative Analysis Complete")
 
-if jb_p > 0.05:
-    st.success("Residuals appear normally distributed")
-else:
-    st.warning("Residuals deviate from normality")
+# ------------------------------------------------------------
+# Footer
+# ------------------------------------------------------------
 
-st.success("Advanced Quantitative Analysis Complete")
-
-------------------------------------------------------------
-
-Footer
-
-------------------------------------------------------------
-
-st.markdown("---") st.markdown("Advanced Quant Modeling • ARIMA + GJR-GARCH • Risk-Aware Forecasting")
+st.markdown("---")
+st.markdown("**Advanced Quant Modeling • ARIMA + GJR-GARCH • Risk-Aware Forecasting**")
