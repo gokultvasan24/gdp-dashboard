@@ -16,13 +16,15 @@ from sklearn.metrics import mean_squared_error, r2_score
 from scipy.stats import jarque_bera
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-from datetime import datetime
+
+from arch import arch_model
+from datetime import datetime, timedelta
 
 warnings.filterwarnings("ignore")
 
-# ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # PAGE CONFIG
-# ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 st.set_page_config(
     page_title="📈 Advanced Stock Forecasting Platform",
     layout="wide"
@@ -31,18 +33,18 @@ st.set_page_config(
 st.title("📈 Advanced Stock Forecasting Platform")
 st.markdown("👨‍💻 **Created by Gokul Thanigaivasan**")
 
-# ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # SIDEBAR
-# ──────────────────────────────────────────────────────────────
-st.sidebar.header("🔧 Configuration Panel")
+# ─────────────────────────────────────────────
+st.sidebar.header("🔧 Configuration")
 
 ticker = st.sidebar.text_input("Stock Ticker", "^NSEI").upper()
 
 col1, col2 = st.sidebar.columns(2)
 with col1:
-    start_date = st.sidebar.date_input("Start Date", datetime(2020, 1, 1))
+    start_date = st.date_input("Start Date", datetime(2020, 1, 1))
 with col2:
-    end_date = st.sidebar.date_input("End Date", datetime.now())
+    end_date = st.date_input("End Date", datetime.now())
 
 price_type = st.sidebar.selectbox(
     "Price Type", ["Close", "Open", "High", "Low", "Adj Close"]
@@ -50,164 +52,180 @@ price_type = st.sidebar.selectbox(
 
 degree = st.sidebar.slider("Polynomial Degree", 1, 8, 3)
 
+garch_p = st.sidebar.slider("GARCH p", 1, 3, 1)
+garch_q = st.sidebar.slider("GARCH q", 1, 3, 1)
+garch_o = st.sidebar.slider("GJR o", 1, 3, 1)
+
 run_btn = st.sidebar.button("🚀 Run Analysis", type="primary")
 
-# ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # UTILITIES
-# ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def download_data(ticker, start, end):
     return yf.download(ticker, start=start, end=end, progress=False)
 
 
 def detect_currency(ticker):
-    if any(x in ticker for x in ["^NSEI", ".NS", "NIFTY"]):
-        return "₹"
-    return "$"
+    return "₹" if any(x in ticker for x in ["^NSEI", ".NS", "NIFTY"]) else "$"
 
 
-def performance_metrics(y_true, y_pred, currency):
-    y_true = np.ravel(y_true)
-    y_pred = np.ravel(y_pred)
+def calculate_returns(series):
+    return series.pct_change().dropna() * 100
 
-    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-    r2 = r2_score(y_true, y_pred)
-    mae = np.mean(np.abs(y_true - y_pred))
 
-    return {
-        "RMSE": f"{currency}{rmse:.2f}",
-        "R²": f"{r2:.4f}",
-        "MAE": f"{currency}{mae:.2f}",
-    }
+# ─────────────────────────────────────────────
+# TECHNICAL INDICATORS
+# ─────────────────────────────────────────────
+def compute_adx(df, period=14):
+    high, low, close = df["High"], df["Low"], df["Close"]
 
-# ──────────────────────────────────────────────────────────────
-# MAIN LOGIC
-# ──────────────────────────────────────────────────────────────
+    plus_dm = high.diff()
+    minus_dm = low.diff().abs()
+
+    plus_dm[plus_dm < 0] = 0
+    minus_dm[minus_dm < 0] = 0
+
+    tr = pd.concat([
+        high - low,
+        (high - close.shift()).abs(),
+        (low - close.shift()).abs()
+    ], axis=1).max(axis=1)
+
+    atr = tr.rolling(period).mean()
+    plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
+    minus_di = 100 * (minus_dm.rolling(period).mean() / atr)
+
+    dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+    adx = dx.rolling(period).mean()
+
+    return adx
+
+
+def compute_stoch_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+
+    stoch_rsi = (rsi - rsi.rolling(period).min()) / (
+        rsi.rolling(period).max() - rsi.rolling(period).min()
+    )
+
+    return stoch_rsi * 100
+
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
 if run_btn:
 
     data = download_data(ticker, start_date, end_date)
 
-    if data.empty or price_type not in data.columns:
-        st.error("❌ Invalid ticker or price type.")
+    if data.empty:
+        st.error("No data found")
         st.stop()
 
     prices = data[price_type].dropna()
-
-    if len(prices) < 30:
-        st.error("❌ Not enough data points.")
-        st.stop()
-
     currency = detect_currency(ticker)
     current_price = float(prices.iloc[-1])
 
-    st.subheader("📊 Data Overview")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Current Price", f"{currency}{current_price:.2f}")
-    c2.metric("Data Points", len(prices))
-    c3.metric("Currency", currency)
-
-    # ──────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────
     # POLYNOMIAL REGRESSION
-    # ──────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────
     st.subheader("📈 Polynomial Regression")
 
-    # Prepare data
     X = np.array([d.toordinal() for d in prices.index], dtype=float).reshape(-1, 1)
     y = prices.values.astype(float)
 
-    X_mean = X.mean()
-    X_range = X.max() - X.min()
-
-    if X_range == 0:
-        st.error("❌ Date range invalid.")
-        st.stop()
-
-    X_norm = (X - X_mean) / X_range
+    X_norm = (X - X.mean()) / (X.max() - X.min())
 
     poly = PolynomialFeatures(degree=degree, include_bias=False)
     X_poly = poly.fit_transform(X_norm)
 
     model = LinearRegression()
     model.fit(X_poly, y)
-
     y_pred = model.predict(X_poly)
 
-    metrics = performance_metrics(y, y_pred, currency)
+    next_x = np.array([[X_norm[-1, 0] + (1 / (X.max() - X.min()))]])
+    next_price = model.predict(poly.transform(next_x)).item()
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("RMSE", metrics["RMSE"])
-    c2.metric("R²", metrics["R²"])
-    c3.metric("MAE", metrics["MAE"])
-
-    # ──────────────────────────────────────────────────────────
-    # NEXT DAY FORECAST (CLOUD SAFE)
-    # ──────────────────────────────────────────────────────────
-    last_x = X_norm[-1, 0]
-    next_x = np.array([[last_x + (1 / X_range)]])
-    next_x_poly = poly.transform(next_x)
-
-    # 🔥 SAFE scalar extraction
-    next_price = model.predict(next_x_poly).item()
-
-    delta = next_price - current_price
-    delta_pct = (delta / current_price) * 100
-
-    st.subheader("🎯 Next-Day Forecast")
     st.metric(
-        "Predicted Price",
+        "Next-Day Forecast",
         f"{currency}{next_price:.2f}",
-        f"{delta:+.2f} ({delta_pct:+.2f}%)"
+        f"{next_price - current_price:+.2f}"
     )
 
-    # ──────────────────────────────────────────────────────────
-    # VISUALIZATION
-    # ──────────────────────────────────────────────────────────
-    st.subheader("📊 Model Fit")
+    # ─────────────────────────────────────────
+    # GJR-GARCH
+    # ─────────────────────────────────────────
+    st.subheader("📊 GJR-GARCH Volatility Forecast")
 
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(prices.index, y, label="Actual", linewidth=2)
-    ax.plot(prices.index, y_pred, "--", label="Predicted", linewidth=2)
-    ax.set_title(f"Polynomial Regression (Degree {degree})")
+    returns = calculate_returns(prices)
+
+    garch = arch_model(
+        returns,
+        vol="Garch",
+        p=garch_p,
+        q=garch_q,
+        o=garch_o,
+        dist="normal"
+    ).fit(disp="off")
+
+    forecast = garch.forecast(horizon=5)
+    variance = forecast.variance.iloc[-1].values
+    volatility = np.sqrt(variance)
+
+    garch_prices = []
+    price = current_price
+
+    for vol in volatility:
+        price *= (1 + np.random.normal(0, vol * 0.01))
+        garch_prices.append(price)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(range(1, 6), garch_prices, marker="o", label="Forecast Price")
+    ax.set_title("GJR-GARCH 5-Day Price Forecast")
+    ax.set_xlabel("Days Ahead")
     ax.set_ylabel(f"Price ({currency})")
-    ax.legend()
     ax.grid(alpha=0.3)
-    plt.xticks(rotation=45)
     st.pyplot(fig)
 
-    # ──────────────────────────────────────────────────────────
-    # RESIDUAL ANALYSIS
-    # ──────────────────────────────────────────────────────────
-    residuals = y - y_pred
+    # ─────────────────────────────────────────
+    # ADX & STOCH RSI
+    # ─────────────────────────────────────────
+    st.subheader("📉 Technical Indicators")
 
-    st.subheader("🔬 Statistical Tests")
-
-    jb_stat, jb_p = jarque_bera(residuals)
-    adf_stat, adf_p, *_ = adfuller(residuals)
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.write("**Jarque-Bera Test**")
-        st.write(f"P-value: {jb_p:.4f}")
-    with c2:
-        st.write("**ADF Test**")
-        st.write(f"P-value: {adf_p:.4f}")
-
-    # ──────────────────────────────────────────────────────────
-    # ACF / PACF
-    # ──────────────────────────────────────────────────────────
-    st.subheader("📉 ACF / PACF")
+    adx = compute_adx(data)
+    stoch_rsi = compute_stoch_rsi(prices)
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-    plot_acf(residuals, ax=ax1, lags=20)
-    plot_pacf(residuals, ax=ax2, lags=20)
-    plt.tight_layout()
+
+    ax1.plot(adx, label="ADX", color="blue")
+    ax1.axhline(25, linestyle="--", color="red", alpha=0.5)
+    ax1.set_title("ADX (Trend Strength)")
+    ax1.legend()
+    ax1.grid(alpha=0.3)
+
+    ax2.plot(stoch_rsi, label="Stochastic RSI", color="green")
+    ax2.axhline(80, linestyle="--", color="red", alpha=0.5)
+    ax2.axhline(20, linestyle="--", color="green", alpha=0.5)
+    ax2.set_title("Stochastic RSI")
+    ax2.legend()
+    ax2.grid(alpha=0.3)
+
     st.pyplot(fig)
 
-# ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # FOOTER
-# ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 st.markdown("---")
 st.markdown(
-    "*Built with Streamlit • Polynomial Regression*\n\n"
+    "*Polynomial Regression • GJR-GARCH • ADX • Stochastic RSI*\n\n"
     "**Created by Gokul Thanigaivasan**"
 )
