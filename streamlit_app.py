@@ -1,22 +1,34 @@
 # ============================================================
-# NSE INSTITUTIONAL DASHBOARD – FINAL STABLE COMBINED VERSION
+# NSE INSTITUTIONAL DASHBOARD – ADVANCED VERSION
 # ============================================================
 
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import requests
 import seaborn as sns
 import matplotlib.pyplot as plt
+import plotly.express as px
 import re
-from datetime import datetime, timedelta
 
 st.set_page_config(page_title="NSE Institutional Dashboard", layout="wide")
 sns.set_style("darkgrid")
 
 # ============================================================
-# SAFE YFINANCE DOWNLOAD
+# SECTOR MAP (You Can Expand)
+# ============================================================
+
+SECTOR_MAP = {
+    "Banking": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS"],
+    "IT": ["TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS"],
+    "Energy": ["RELIANCE.NS", "ONGC.NS", "BPCL.NS"],
+    "Auto": ["MARUTI.NS", "TATAMOTORS.NS", "M&M.NS"],
+}
+
+ALL_STOCKS = list(set(sum(SECTOR_MAP.values(), [])))
+
+# ============================================================
+# SAFE DOWNLOAD
 # ============================================================
 
 @st.cache_data(ttl=600)
@@ -39,86 +51,37 @@ def download_data(ticker, period="1y", interval="1d"):
 
     df.columns = [c.capitalize() for c in df.columns]
 
-    required = ["Open", "High", "Low", "Close"]
-    if not all(col in df.columns for col in required):
-        return pd.DataFrame()
-
     return df.dropna()
 
 
 # ============================================================
-# SIMPLE RSI (NO ta LIBRARY)
+# RSI
 # ============================================================
 
 def calculate_rsi(series, period=14):
-
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
-
     rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-
-    return rsi
+    return 100 - (100 / (1 + rs))
 
 
 # ============================================================
-# 30 DAY PROJECTION
+# MACD
 # ============================================================
 
-def project_30_days(df):
-
-    if len(df) < 20:
-        return pd.DataFrame()
-
-    x = np.arange(len(df))
-    y = df["Close"].values
-
-    slope, intercept = np.polyfit(x, y, 1)
-
-    future_x = np.arange(len(df), len(df) + 30)
-    future_y = slope * future_x + intercept
-
-    future_dates = pd.date_range(
-        start=df.index[-1] + pd.Timedelta(days=1),
-        periods=30,
-        freq="B"
-    )
-
-    return pd.DataFrame({"Close": future_y}, index=future_dates)
+def calculate_macd(series):
+    ema12 = series.ewm(span=12, adjust=False).mean()
+    ema26 = series.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9, adjust=False).mean()
+    return macd, signal
 
 
 # ============================================================
-# AUTO NSE FII / DII API
-# ============================================================
-
-@st.cache_data(ttl=1800)
-def get_fii_dii():
-
-    session = requests.Session()
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    try:
-        session.get("https://www.nseindia.com", headers=headers)
-        url = "https://www.nseindia.com/api/fiidiiTradeReact"
-        resp = session.get(url, headers=headers)
-
-        if resp.status_code != 200:
-            return None
-
-        df = pd.DataFrame(resp.json()["data"])
-        df["date"] = pd.to_datetime(df["date"], dayfirst=True)
-        return df.sort_values("date", ascending=False).head(5)
-
-    except:
-        return None
-
-
-# ============================================================
-# MANUAL FII/DII PARSER (Fallback)
+# MANUAL FII PARSER
 # ============================================================
 
 def extract_number(value):
@@ -150,12 +113,6 @@ def parse_manual_data(text):
         elif line == "NIFTY":
             row["NIFTY"] = extract_number(lines[i+1].strip())
 
-        elif line == "INDIA VIX":
-            row["VIX"] = extract_number(lines[i+1].strip())
-
-        elif line == "SENSEX":
-            row["SENSEX"] = extract_number(lines[i+1].strip())
-
     if row:
         data.append(row)
 
@@ -172,16 +129,16 @@ def parse_manual_data(text):
 # TABS
 # ============================================================
 
-tabs = st.tabs(["Market Overview", "Stock Analytics", "Manual FII Entry"])
+tabs = st.tabs(["Market Overview", "Sector Performance", "Stock Analytics", "Manual FII"])
 
 
 # ============================================================
-# MARKET OVERVIEW
+# 1️⃣ MARKET OVERVIEW
 # ============================================================
 
 with tabs[0]:
 
-    st.header("Market Overview – 52W Range + 30D Projection")
+    st.header("Market Overview – 52W Range")
 
     indices = {
         "NIFTY 50": "^NSEI",
@@ -191,75 +148,127 @@ with tabs[0]:
 
     for name, symbol in indices.items():
 
-        df = download_data(symbol, period="1y", interval="1d")
+        df = download_data(symbol)
 
         if df.empty:
             st.warning(f"No data for {name}")
             continue
 
-        df = df[df.index.dayofweek < 5]
-
         high_52w = df["High"].max()
         low_52w = df["Low"].min()
 
-        forecast = project_30_days(df)
-
         fig, ax = plt.subplots(figsize=(12,5))
-        sns.lineplot(x=df.index, y=df["Close"], ax=ax, label="Actual")
-
-        if not forecast.empty:
-            sns.lineplot(x=forecast.index, y=forecast["Close"], ax=ax, label="30D Projection")
-
-        ax.set_title(name)
+        sns.lineplot(x=df.index, y=df["Close"], ax=ax)
         ax.set_ylim(low_52w, high_52w)
-
+        ax.set_title(name)
         st.pyplot(fig)
-
-    # AUTO FII DII
-    st.subheader("FII / DII – Live NSE")
-
-    fii = get_fii_dii()
-
-    if fii is not None:
-        st.dataframe(fii)
-    else:
-        st.warning("NSE API Blocked – Use Manual Entry Tab")
 
 
 # ============================================================
-# STOCK ANALYTICS
+# 2️⃣ SECTOR PERFORMANCE
 # ============================================================
 
 with tabs[1]:
 
-    st.header("Stock Analytics – 1H Data (1 Year)")
+    st.header("Sector Performance")
+
+    data = yf.download(ALL_STOCKS, period="2wk",
+                       progress=False, auto_adjust=True, threads=False)
+
+    sector_perf = {}
+    sector_2week = {}
+
+    if isinstance(data.columns, pd.MultiIndex):
+
+        for sector, stocks in SECTOR_MAP.items():
+
+            changes = []
+            two_week_changes = []
+
+            for stock in stocks:
+                try:
+                    df = data.xs(stock, axis=1, level=1)
+                    close = df["Close"].dropna()
+
+                    if len(close) >= 2:
+                        daily_pct = ((close.iloc[-1] - close.iloc[-2])
+                                     / close.iloc[-2]) * 100
+                        changes.append(daily_pct)
+
+                    if len(close) >= 10:
+                        two_week_pct = ((close.iloc[-1] - close.iloc[-10])
+                                        / close.iloc[-10]) * 100
+                        two_week_changes.append(two_week_pct)
+
+                except:
+                    continue
+
+            if changes:
+                sector_perf[sector] = np.mean(changes)
+
+            if two_week_changes:
+                sector_2week[sector] = np.mean(two_week_changes)
+
+    df_sector = pd.DataFrame.from_dict(
+        sector_perf, orient="index", columns=["1D % Change"]
+    )
+
+    df_sector2 = pd.DataFrame.from_dict(
+        sector_2week, orient="index", columns=["2W % Change"]
+    )
+
+    if not df_sector.empty:
+
+        fig = px.imshow(
+            df_sector.T,
+            text_auto=True,
+            aspect="auto",
+            color_continuous_scale="RdYlGn"
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.dataframe(
+            df_sector.join(df_sector2).sort_values("1D % Change", ascending=False),
+            use_container_width=True
+        )
+
+
+# ============================================================
+# 3️⃣ STOCK ANALYTICS
+# ============================================================
+
+with tabs[2]:
+
+    st.header("Stock Analytics – 1H + MACD")
 
     stock = st.text_input("Enter NSE Stock", "RELIANCE.NS")
 
-    df = download_data(stock, period="1y", interval="1h")
+    df = download_data(stock, period="6mo", interval="1h")
 
     if df.empty:
         st.warning("No data available.")
     else:
 
-        df = df[df.index.dayofweek < 5]
-
         high_52w = df["High"].max()
         low_52w = df["Low"].min()
 
         rsi = calculate_rsi(df["Close"])
+        macd, signal = calculate_macd(df["Close"])
 
         col1, col2, col3 = st.columns(3)
         col1.metric("LTP", f"{df['Close'].iloc[-1]:.2f}")
-        col2.metric("52W High", f"{high_52w:.2f}")
-        col3.metric("52W Low", f"{low_52w:.2f}")
+        col2.metric("High", f"{high_52w:.2f}")
+        col3.metric("Low", f"{low_52w:.2f}")
 
+        # PRICE
         fig, ax = plt.subplots(figsize=(12,5))
         sns.lineplot(x=df.index, y=df["Close"], ax=ax)
         ax.set_ylim(low_52w, high_52w)
-        ax.set_title(f"{stock} Price (1H)")
+        ax.set_title(f"{stock} Price")
         st.pyplot(fig)
 
+        # RSI
         fig2, ax2 = plt.subplots(figsize=(12,3))
         sns.lineplot(x=df.index, y=rsi, ax=ax2)
         ax2.axhline(70)
@@ -267,29 +276,32 @@ with tabs[1]:
         ax2.set_title("RSI")
         st.pyplot(fig2)
 
+        # MACD
+        fig3, ax3 = plt.subplots(figsize=(12,3))
+        sns.lineplot(x=df.index, y=macd, ax=ax3, label="MACD")
+        sns.lineplot(x=df.index, y=signal, ax=ax3, label="Signal")
+        ax3.set_title("MACD")
+        st.pyplot(fig3)
+
 
 # ============================================================
-# MANUAL FII ENTRY TAB
+# 4️⃣ MANUAL FII ENTRY
 # ============================================================
 
-with tabs[2]:
+with tabs[3]:
 
-    st.header("Manual FII / DII Paste")
+    st.header("Manual FII Entry")
 
-    raw_text = st.text_area("Paste FII/DII Data Here")
+    raw_text = st.text_area("Paste FII Data Here")
 
     if raw_text:
         df_manual = parse_manual_data(raw_text)
 
         if not df_manual.empty:
-
             st.dataframe(df_manual)
 
             fig, ax = plt.subplots(figsize=(12,5))
             sns.barplot(x="Date", y="FII Cash", data=df_manual, ax=ax)
-            ax.set_title("FII Cash Flow")
             plt.xticks(rotation=45)
+            ax.set_title("FII Cash Flow")
             st.pyplot(fig)
-
-        else:
-            st.warning("Unable to parse data.")
