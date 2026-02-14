@@ -1,5 +1,5 @@
 # ============================================================
-# NSE INSTITUTIONAL DASHBOARD – FULL VERSION
+# NSE INSTITUTIONAL DASHBOARD – FULL CLOUD SAFE VERSION
 # ============================================================
 
 import streamlit as st
@@ -12,74 +12,50 @@ import ta
 st.set_page_config(page_title="NSE Institutional Dashboard", layout="wide")
 
 # ============================================================
-# CUSTOM SECTOR MAP (YOUR DATA)
+# YOUR CUSTOM SECTOR MAP
 # ============================================================
 
 RAW_SECTOR_DATA = [
-    ("Metals & Mining","HINDALCO"),
-    ("FMCG","HINDUNILVR"),
-    ("Services","ETERNAL"),
-    ("Metals & Mining","ADANIENT"),
-    ("Oil & Gas","ONGC"),
-    ("Automobile","HEROMOTOCO"),
-    ("Metals & Mining","TATASTEEL"),
-    ("Consumer Durables","TITAN"),
-    ("Oil & Gas","COALINDIA"),
-    ("Services","ADANIPORTS"),
-    ("Power","POWERGRID"),
-    ("Information Technology","WIPRO"),
-    ("FMCG","NESTLEIND"),
-    ("Oil & Gas","RELIANCE"),
-    ("Information Technology","TCS"),
-    ("Captial Goods","BEL"),
-    ("Financial Services","HDFCBANK"),
-    ("Consumer Durables","ASIANPAINT"),
-    ("Financial Services","SHRIRAMFIN"),
-    ("Automobile","M&M"),
-    ("FMCG","TATACONSUM"),
-    ("Construction Materials","GRASIM"),
-    ("Metals & Mining","JSWSTEEL"),
-    ("Automobile","TMPV"),
-    ("Financial Services","JIOFIN"),
-    ("Information Technology","HCLTECH"),
-    ("Information Technology","INFY"),
-    ("FMCG","ITC"),
-    ("Power","NTPC"),
-    ("Telecommunication","BHARTIARTL"),
-    ("Financial Services","KOTAKBANK"),
-    ("Financial Services","ICICIBANK"),
-    ("Automobile","BAJAJ-AUTO"),
-    ("Healthcare","SUNPHARMA"),
-    ("Retail","TRENT"),
-    ("Financial Services","HDFCLIFE"),
-    ("Automobile","MARUTI"),
-    ("Financial Services","AXISBANK"),
-    ("Financial Services","BAJAJFINSV"),
-    ("Healthcare","DRREDDY"),
-    ("Construction Materials","ULTRACEMCO"),
-    ("Construction","LT"),
-    ("Healthcare","APOLLOHOSP"),
-    ("Information Technology","TECHM"),
-    ("Healthcare","CIPLA"),
-    ("Financial Services","SBIN"),
-    ("Financial Services","INDUSINDBK"),
-    ("Financial Services","SBILIFE"),
-    ("Automobile","EICHERMOT"),
-    ("Financial Services","BAJFINANCE")
+    ("Metals & Mining","HINDALCO"), ("FMCG","HINDUNILVR"),
+    ("Services","ETERNAL"), ("Metals & Mining","ADANIENT"),
+    ("Oil & Gas","ONGC"), ("Automobile","HEROMOTOCO"),
+    ("Metals & Mining","TATASTEEL"), ("Consumer Durables","TITAN"),
+    ("Oil & Gas","COALINDIA"), ("Services","ADANIPORTS"),
+    ("Power","POWERGRID"), ("Information Technology","WIPRO"),
+    ("FMCG","NESTLEIND"), ("Oil & Gas","RELIANCE"),
+    ("Information Technology","TCS"), ("Captial Goods","BEL"),
+    ("Financial Services","HDFCBANK"), ("Consumer Durables","ASIANPAINT"),
+    ("Financial Services","SHRIRAMFIN"), ("Automobile","M&M"),
+    ("FMCG","TATACONSUM"), ("Construction Materials","GRASIM"),
+    ("Metals & Mining","JSWSTEEL"), ("Automobile","TMPV"),
+    ("Financial Services","JIOFIN"), ("Information Technology","HCLTECH"),
+    ("Information Technology","INFY"), ("FMCG","ITC"),
+    ("Power","NTPC"), ("Telecommunication","BHARTIARTL"),
+    ("Financial Services","KOTAKBANK"), ("Financial Services","ICICIBANK"),
+    ("Automobile","BAJAJ-AUTO"), ("Healthcare","SUNPHARMA"),
+    ("Retail","TRENT"), ("Financial Services","HDFCLIFE"),
+    ("Automobile","MARUTI"), ("Financial Services","AXISBANK"),
+    ("Financial Services","BAJAJFINSV"), ("Healthcare","DRREDDY"),
+    ("Construction Materials","ULTRACEMCO"), ("Construction","LT"),
+    ("Healthcare","APOLLOHOSP"), ("Information Technology","TECHM"),
+    ("Healthcare","CIPLA"), ("Financial Services","SBIN"),
+    ("Financial Services","INDUSINDBK"), ("Financial Services","SBILIFE"),
+    ("Automobile","EICHERMOT"), ("Financial Services","BAJFINANCE")
 ]
 
 SECTOR_MAP = {}
 for sector, symbol in RAW_SECTOR_DATA:
     SECTOR_MAP.setdefault(sector, []).append(symbol + ".NS")
 
-ALL_STOCKS = list(set([s for v in SECTOR_MAP.values() for s in v]))
+ALL_STOCKS = sorted(list(set([s for v in SECTOR_MAP.values() for s in v])))
 
 # ============================================================
-# CACHE SAFE DOWNLOAD
+# SAFE DOWNLOAD FUNCTION
 # ============================================================
 
 @st.cache_data(ttl=600)
 def download_data(tickers, period="5d", interval="1d"):
+
     df = yf.download(
         tickers,
         period=period,
@@ -88,6 +64,12 @@ def download_data(tickers, period="5d", interval="1d"):
         auto_adjust=True,
         threads=False
     )
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df = df.loc[:, ~df.columns.duplicated()]
+
     return df
 
 # ============================================================
@@ -104,7 +86,8 @@ with tabs[0]:
 
     st.header("Market Overview")
 
-    data = download_data(ALL_STOCKS, period="5d")
+    data = yf.download(ALL_STOCKS, period="5d",
+                       progress=False, auto_adjust=True, threads=False)
 
     adv, dec = 0, 0
     movers = []
@@ -149,7 +132,8 @@ with tabs[1]:
 
     st.header("Sector Performance")
 
-    data = download_data(ALL_STOCKS, period="5d")
+    data = yf.download(ALL_STOCKS, period="5d",
+                       progress=False, auto_adjust=True, threads=False)
 
     sector_perf = {}
 
@@ -193,7 +177,7 @@ with tabs[1]:
         )
 
 # ============================================================
-# 3️⃣ STOCK ANALYTICS (5M – 10 DAYS)
+# 3️⃣ STOCK ANALYTICS (5M – 10 DAYS) – FIXED
 # ============================================================
 
 with tabs[2]:
@@ -208,14 +192,14 @@ with tabs[2]:
         interval="5m"
     )
 
-    if not intraday.empty:
+    if intraday is not None and not intraday.empty:
 
         intraday = intraday.dropna()
 
-        close = intraday["Close"]
-        high = intraday["High"]
-        low = intraday["Low"]
-        volume = intraday["Volume"]
+        close = pd.Series(intraday["Close"]).astype(float)
+        high = pd.Series(intraday["High"]).astype(float)
+        low = pd.Series(intraday["Low"]).astype(float)
+        volume = pd.Series(intraday["Volume"]).astype(float)
 
         # VWAP
         typical_price = (high + low + close) / 3
@@ -225,12 +209,11 @@ with tabs[2]:
         rsi = ta.momentum.RSIIndicator(close, window=14).rsi().fillna(0)
 
         # MACD
-        macd_indicator = ta.trend.MACD(close)
-        macd = macd_indicator.macd().fillna(0)
+        macd = ta.trend.MACD(close).macd().fillna(0)
 
         # 52 Week High
         daily_52w = download_data(stock, period="1y", interval="1d")
-        high_52w = daily_52w["High"].max()
+        high_52w = daily_52w["High"].astype(float).max()
 
         col1, col2, col3, col4 = st.columns(4)
 
