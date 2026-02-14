@@ -1,93 +1,58 @@
 # ============================================================
-# NSE INSTITUTIONAL DASHBOARD – DROPDOWN VERSION
-# 1H + MACD + RSI + ALL STOCKS + INDICES
+# NSE INSTITUTIONAL DASHBOARD – COMPLETE PROFESSIONAL VERSION
 # ============================================================
 
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-st.set_page_config(page_title="NSE Institutional Dashboard", layout="wide")
-sns.set_style("darkgrid")
+import plotly.graph_objects as go
+import plotly.express as px
+import re
 
 # ============================================================
-# RAW SECTOR DATA
+# PAGE CONFIG
 # ============================================================
 
-RAW_SECTOR_DATA = [
-    ("Metals & Mining","HINDALCO"), ("FMCG","HINDUNILVR"),
-    ("Services","ETERNAL"), ("Metals & Mining","ADANIENT"),
-    ("Oil & Gas","ONGC"), ("Automobile","HEROMOTOCO"),
-    ("Metals & Mining","TATASTEEL"), ("Consumer Durables","TITAN"),
-    ("Oil & Gas","COALINDIA"), ("Services","ADANIPORTS"),
-    ("Power","POWERGRID"), ("Information Technology","WIPRO"),
-    ("FMCG","NESTLEIND"), ("Oil & Gas","RELIANCE"),
-    ("Information Technology","TCS"), ("Captial Goods","BEL"),
-    ("Financial Services","HDFCBANK"), ("Consumer Durables","ASIANPAINT"),
-    ("Financial Services","SHRIRAMFIN"), ("Automobile","M&M"),
-    ("FMCG","TATACONSUM"), ("Construction Materials","GRASIM"),
-    ("Metals & Mining","JSWSTEEL"), ("Automobile","TMPV"),
-    ("Financial Services","JIOFIN"), ("Information Technology","HCLTECH"),
-    ("Information Technology","INFY"), ("FMCG","ITC"),
-    ("Power","NTPC"), ("Telecommunication","BHARTIARTL"),
-    ("Financial Services","KOTAKBANK"), ("Financial Services","ICICIBANK"),
-    ("Automobile","BAJAJ-AUTO"), ("Healthcare","SUNPHARMA"),
-    ("Retail","TRENT"), ("Financial Services","HDFCLIFE"),
-    ("Automobile","MARUTI"), ("Financial Services","AXISBANK"),
-    ("Financial Services","BAJAJFINSV"), ("Healthcare","DRREDDY"),
-    ("Construction Materials","ULTRACEMCO"), ("Construction","LT"),
-    ("Healthcare","APOLLOHOSP"), ("Information Technology","TECHM"),
-    ("Healthcare","CIPLA"), ("Financial Services","SBIN"),
-    ("Financial Services","INDUSINDBK"), ("Financial Services","SBILIFE"),
-    ("Automobile","EICHERMOT"), ("Financial Services","BAJFINANCE")
+st.set_page_config(
+    page_title="NSE Institutional Dashboard",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.title("📊 NSE Institutional Analytics Dashboard")
+
+# ============================================================
+# NIFTY 50 STOCK LIST
+# ============================================================
+
+NIFTY_50 = [
+    "RELIANCE.NS","HDFCBANK.NS","ICICIBANK.NS","INFY.NS","TCS.NS",
+    "KOTAKBANK.NS","ITC.NS","LT.NS","SBIN.NS","AXISBANK.NS",
+    "ASIANPAINT.NS","MARUTI.NS","BAJFINANCE.NS","HCLTECH.NS",
+    "SUNPHARMA.NS","TITAN.NS","ULTRACEMCO.NS","WIPRO.NS",
+    "NESTLEIND.NS","POWERGRID.NS","ONGC.NS","NTPC.NS",
+    "JSWSTEEL.NS","TATASTEEL.NS","HDFCLIFE.NS","BAJAJFINSV.NS",
+    "COALINDIA.NS","INDUSINDBK.NS","DRREDDY.NS","CIPLA.NS",
+    "BHARTIARTL.NS","M&M.NS","HEROMOTOCO.NS","EICHERMOT.NS",
+    "APOLLOHOSP.NS","GRASIM.NS","TECHM.NS","SBILIFE.NS",
+    "ADANIPORTS.NS","HINDALCO.NS","TATACONSUM.NS","DIVISLAB.NS",
+    "BRITANNIA.NS","BAJAJ-AUTO.NS","SHRIRAMFIN.NS",
+    "BPCL.NS","UPL.NS","TATAMOTORS.NS","ADANIENT.NS"
 ]
 
-# Convert to NSE format
-STOCK_LIST = sorted(list(set([symbol + ".NS" for _, symbol in RAW_SECTOR_DATA])))
+# ============================================================
+# INDICES
+# ============================================================
 
-# Add Indices
-INDEX_LIST = {
+INDICES = {
     "NIFTY 50": "^NSEI",
-    "NIFTY Bank": "^NSEBANK",
-    "India VIX": "^INDIAVIX"
+    "BANK NIFTY": "^NSEBANK",
+    "INDIA VIX": "^INDIAVIX"
 }
 
-# Combine everything
-DISPLAY_LIST = list(INDEX_LIST.keys()) + STOCK_LIST
-
-
 # ============================================================
-# DOWNLOAD FUNCTION
-# ============================================================
-
-@st.cache_data(ttl=600)
-def download_data(ticker, period="6mo", interval="1h"):
-
-    df = yf.download(
-        ticker,
-        period=period,
-        interval=interval,
-        progress=False,
-        auto_adjust=True,
-        threads=False
-    )
-
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    df.columns = [c.capitalize() for c in df.columns]
-
-    return df.dropna()
-
-
-# ============================================================
-# RSI
+# TECHNICAL FUNCTIONS
 # ============================================================
 
 def calculate_rsi(series, period=14):
@@ -99,92 +64,187 @@ def calculate_rsi(series, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-
-# ============================================================
-# MACD
-# ============================================================
-
 def calculate_macd(series):
     ema12 = series.ewm(span=12, adjust=False).mean()
     ema26 = series.ewm(span=26, adjust=False).mean()
     macd = ema12 - ema26
     signal = macd.ewm(span=9, adjust=False).mean()
-    histogram = macd - signal
-    return macd, signal, histogram
+    return macd, signal
 
-
-# ============================================================
-# UI
-# ============================================================
-
-st.title("📊 NSE Institutional Stock Dashboard")
-
-selected = st.selectbox("Select NSE Stock / Index", DISPLAY_LIST)
-
-# Convert display name to actual ticker
-if selected in INDEX_LIST:
-    ticker = INDEX_LIST[selected]
-else:
-    ticker = selected
-
-df = download_data(ticker)
-
-if df.empty:
-    st.error("No data available.")
-    st.stop()
-
-close = df["Close"]
-
-rsi = calculate_rsi(close)
-macd, signal, hist = calculate_macd(close)
-
-high_6m = df["High"].max()
-low_6m = df["Low"].min()
+@st.cache_data(ttl=600)
+def download_data(ticker, period="6mo", interval="1h"):
+    df = yf.download(ticker, period=period, interval=interval, progress=False)
+    if df.empty:
+        return pd.DataFrame()
+    df.columns = [c.capitalize() for c in df.columns]
+    return df
 
 # ============================================================
-# METRICS
+# SIDEBAR NAVIGATION
 # ============================================================
 
-col1, col2, col3, col4 = st.columns(4)
+st.sidebar.title("Navigation")
 
-col1.metric("LTP", f"{close.iloc[-1]:.2f}")
-col2.metric("6M High", f"{high_6m:.2f}")
-col3.metric("6M Low", f"{low_6m:.2f}")
-col4.metric("RSI (14)", f"{rsi.iloc[-1]:.2f}")
-
-# ============================================================
-# PRICE CHART
-# ============================================================
-
-st.subheader("1H Price Chart")
-
-fig1, ax1 = plt.subplots(figsize=(14,6))
-sns.lineplot(x=df.index, y=close, ax=ax1)
-ax1.set_title(f"{selected} – 1H Price")
-ax1.set_ylim(low_6m, high_6m)
-st.pyplot(fig1)
+menu = st.sidebar.radio(
+    "Select Section",
+    ["Market Overview", "Sector Heatmap", "Stock Analytics", "FII / DII Data"]
+)
 
 # ============================================================
-# RSI CHART
+# 1️⃣ MARKET OVERVIEW
 # ============================================================
 
-st.subheader("RSI Indicator")
+if menu == "Market Overview":
 
-fig2, ax2 = plt.subplots(figsize=(14,4))
-sns.lineplot(x=df.index, y=rsi, ax=ax2)
-ax2.axhline(70, linestyle="--")
-ax2.axhline(30, linestyle="--")
-st.pyplot(fig2)
+    st.header("📈 Market Overview")
+
+    cols = st.columns(3)
+
+    for i, (name, symbol) in enumerate(INDICES.items()):
+        df = download_data(symbol, period="6mo", interval="1d")
+
+        if not df.empty:
+            ltp = df["Close"].iloc[-1]
+            change = df["Close"].pct_change().iloc[-1] * 100
+
+            cols[i].metric(
+                name,
+                f"{ltp:.2f}",
+                f"{change:.2f}%"
+            )
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=df.index,
+                y=df["Close"],
+                mode="lines",
+                name=name
+            ))
+            fig.update_layout(height=300)
+            st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================
-# MACD CHART
+# 2️⃣ SECTOR HEATMAP
 # ============================================================
 
-st.subheader("MACD Indicator")
+elif menu == "Sector Heatmap":
 
-fig3, ax3 = plt.subplots(figsize=(14,4))
-sns.lineplot(x=df.index, y=macd, ax=ax3, label="MACD")
-sns.lineplot(x=df.index, y=signal, ax=ax3, label="Signal")
-ax3.bar(df.index, hist, alpha=0.3)
-ax3.legend()
-st.pyplot(fig3)
+    st.header("🔥 NIFTY 50 Heatmap (1 Day Change)")
+
+    data = yf.download(NIFTY_50, period="5d", progress=False)
+
+    changes = {}
+    for stock in NIFTY_50:
+        try:
+            close = data["Close"][stock]
+            pct = ((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2]) * 100
+            changes[stock.replace(".NS","")] = pct
+        except:
+            continue
+
+    df_heat = pd.DataFrame.from_dict(changes, orient="index", columns=["1D %"])
+
+    fig = px.imshow(
+        df_heat.T,
+        text_auto=True,
+        aspect="auto",
+        color_continuous_scale="RdYlGn"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+# ============================================================
+# 3️⃣ STOCK ANALYTICS
+# ============================================================
+
+elif menu == "Stock Analytics":
+
+    st.header("📊 Stock Analytics – 1H + MACD")
+
+    stock = st.selectbox("Select NSE Stock", NIFTY_50)
+
+    df = download_data(stock)
+
+    if df.empty:
+        st.warning("No data available")
+    else:
+
+        rsi = calculate_rsi(df["Close"])
+        macd, signal = calculate_macd(df["Close"])
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric("LTP", f"{df['Close'].iloc[-1]:.2f}")
+        col2.metric("Volume", f"{df['Volume'].iloc[-1]:,.0f}")
+        col3.metric("52W High", f"{df['High'].max():.2f}")
+
+        # Price Chart
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(
+            x=df.index,
+            open=df["Open"],
+            high=df["High"],
+            low=df["Low"],
+            close=df["Close"],
+            name="Price"
+        ))
+        fig.update_layout(height=500)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # RSI
+        fig_rsi = go.Figure()
+        fig_rsi.add_trace(go.Scatter(x=df.index, y=rsi, name="RSI"))
+        fig_rsi.add_hline(y=70)
+        fig_rsi.add_hline(y=30)
+        fig_rsi.update_layout(height=300)
+        st.plotly_chart(fig_rsi, use_container_width=True)
+
+        # MACD
+        fig_macd = go.Figure()
+        fig_macd.add_trace(go.Scatter(x=df.index, y=macd, name="MACD"))
+        fig_macd.add_trace(go.Scatter(x=df.index, y=signal, name="Signal"))
+        fig_macd.update_layout(height=300)
+        st.plotly_chart(fig_macd, use_container_width=True)
+
+# ============================================================
+# 4️⃣ FII / DII DATA (MANUAL ENTRY)
+# ============================================================
+
+elif menu == "FII / DII Data":
+
+    st.header("🏦 FII / DII Cash Activity")
+
+    raw_text = st.text_area("Paste NSE FII/DII Data Here")
+
+    if raw_text:
+
+        lines = raw_text.split("\n")
+        data = []
+        row = {}
+
+        for i, line in enumerate(lines):
+
+            line = line.strip()
+
+            if re.search(r"\d{2}-\w{3}-\d{4}", line):
+                if row:
+                    data.append(row)
+                    row = {}
+                row["Date"] = line
+
+            elif "FII" in line:
+                row["FII"] = float(re.findall(r"-?\d+\.?\d*", line.replace(",",""))[0])
+
+            elif "DII" in line:
+                row["DII"] = float(re.findall(r"-?\d+\.?\d*", line.replace(",",""))[0])
+
+        if row:
+            data.append(row)
+
+        df_fii = pd.DataFrame(data)
+
+        if not df_fii.empty:
+            st.dataframe(df_fii)
+
+            fig = px.bar(df_fii, x="Date", y="FII")
+            st.plotly_chart(fig, use_container_width=True)
