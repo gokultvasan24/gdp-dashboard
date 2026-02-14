@@ -6,5 +6,4 @@ scipy
 statsmodels
 plotly
 ta
-plotly
-nsefin
+requests
