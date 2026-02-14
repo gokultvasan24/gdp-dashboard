@@ -1,6 +1,5 @@
 # ============================================================
-# NSE INSTITUTIONAL DASHBOARD + GARCH ENGINE
-# Cloud Safe Version
+# NSE INSTITUTIONAL DASHBOARD (3 MONTH VERSION - CLOUD SAFE)
 # ============================================================
 
 import streamlit as st
@@ -41,7 +40,7 @@ INDEX_SYMBOLS = {
 }
 
 # ============================================================
-# SAFE DOWNLOAD FUNCTION
+# SAFE DOWNLOAD
 # ============================================================
 
 @st.cache_data(ttl=600)
@@ -68,13 +67,11 @@ def safe_download(tickers, **kwargs):
 # ============================================================
 
 st.sidebar.header("Configuration")
-start_date = st.sidebar.date_input("Start Date", pd.to_datetime("2018-01-01"))
-end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
 run_garch = st.sidebar.button("Run GARCH Screening")
 
 tabs = st.tabs([
     "Market Overview",
-    "Stock Analytics",
+    "Stock Analytics (3 Months)",
     "GARCH Screening"
 ])
 
@@ -89,55 +86,22 @@ with tabs[0]:
         data = safe_download(ticker, period="5d", interval="1d")
 
         if not data.empty and len(data) >= 2:
-            last = data["Close"].iloc[-1]
-            prev = data["Close"].iloc[-2]
+            last = float(data["Close"].iloc[-1])
+            prev = float(data["Close"].iloc[-2])
             change = ((last - prev) / prev) * 100
-            st.metric(name, round(last,2), f"{round(change,2)}%")
-
-    bulk = yf.download(NIFTY_50_TICKERS, period="5d", interval="1d",
-                       progress=False, auto_adjust=True, threads=False)
-
-    if isinstance(bulk.columns, pd.MultiIndex):
-
-        adv, dec = 0, 0
-        movers = []
-
-        for ticker in NIFTY_50_TICKERS:
-            try:
-                df = bulk.xs(ticker, axis=1, level=1)
-                if len(df) >= 2:
-                    last = df["Close"].iloc[-1]
-                    prev = df["Close"].iloc[-2]
-                    pct = ((last - prev) / prev) * 100
-                    movers.append((ticker, pct))
-                    if pct > 0:
-                        adv += 1
-                    else:
-                        dec += 1
-            except:
-                continue
-
-        st.metric("Advance / Decline", f"{adv} / {dec}")
-
-        movers_df = pd.DataFrame(movers, columns=["Ticker","% Change"])
-        movers_df.sort_values("% Change", ascending=False, inplace=True)
-
-        st.subheader("Top Gainers")
-        st.dataframe(movers_df.head(5), use_container_width=True)
-
-        st.subheader("Top Losers")
-        st.dataframe(movers_df.tail(5), use_container_width=True)
+            st.metric(name, f"{last:.2f}", f"{change:.2f}%")
 
 # ============================================================
-# STOCK ANALYTICS (FIXED)
+# STOCK ANALYTICS (3 MONTH DATA)
 # ============================================================
 
 with tabs[1]:
-    st.header("Stock Analytics")
+    st.header("Stock Analytics - Last 3 Months")
 
     selected_stock = st.selectbox("Select Stock", NIFTY_50_TICKERS)
 
-    data = safe_download(selected_stock, period="1y")
+    # 🔥 3 MONTH PERIOD
+    data = safe_download(selected_stock, period="3mo")
 
     if not data.empty and "Close" in data.columns:
 
@@ -148,30 +112,41 @@ with tabs[1]:
         if isinstance(close_series, pd.DataFrame):
             close_series = close_series.iloc[:, 0]
 
-        # RSI
+        close_series = pd.Series(close_series).astype(float)
+        data["Close"] = close_series
+
+        # Indicators
         rsi_indicator = ta.momentum.RSIIndicator(close_series)
         data["RSI"] = rsi_indicator.rsi()
 
-        # MACD
         macd_indicator = ta.trend.MACD(close_series)
         data["MACD"] = macd_indicator.macd()
 
         latest = data.iloc[-1]
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("LTP", round(latest["Close"], 2))
-        col2.metric("Volume", int(latest["Volume"]))
-        col3.metric("52W High", round(data["High"].max(), 2))
+        ltp = float(latest["Close"])
+        volume = int(float(latest["Volume"]))
+        high_3m = float(data["High"].max())
 
+        col1, col2, col3 = st.columns(3)
+        col1.metric("LTP", f"{ltp:.2f}")
+        col2.metric("Volume", f"{volume:,}")
+        col3.metric("3M High", f"{high_3m:.2f}")
+
+        st.subheader("Price Chart")
         st.line_chart(data[["Close"]])
+
+        st.subheader("RSI")
         st.line_chart(data[["RSI"]])
+
+        st.subheader("MACD")
         st.line_chart(data[["MACD"]])
 
     else:
         st.warning("Stock data unavailable.")
 
 # ============================================================
-# GARCH SCREENING
+# GARCH SCREENING (3 YEAR DATA FOR STABILITY)
 # ============================================================
 
 def get_log_returns(price_series):
@@ -187,7 +162,7 @@ with tabs[2]:
 
         for ticker in NIFTY_50_TICKERS:
 
-            data = safe_download(ticker, start=start_date, end=end_date)
+            data = safe_download(ticker, period="3y")
 
             if data.empty or "Close" not in data.columns:
                 continue
