@@ -1,5 +1,5 @@
 # ============================================================
-# NSE INSTITUTIONAL DASHBOARD - FULL CUSTOM SECTOR VERSION
+# NSE INSTITUTIONAL DASHBOARD – FULL VERSION
 # ============================================================
 
 import streamlit as st
@@ -12,7 +12,7 @@ import ta
 st.set_page_config(page_title="NSE Institutional Dashboard", layout="wide")
 
 # ============================================================
-# YOUR CUSTOM SECTOR MAP
+# CUSTOM SECTOR MAP (YOUR DATA)
 # ============================================================
 
 RAW_SECTOR_DATA = [
@@ -68,65 +68,56 @@ RAW_SECTOR_DATA = [
     ("Financial Services","BAJFINANCE")
 ]
 
-# Convert to dict
 SECTOR_MAP = {}
 for sector, symbol in RAW_SECTOR_DATA:
-    symbol_ns = symbol + ".NS"
-    SECTOR_MAP.setdefault(sector, []).append(symbol_ns)
+    SECTOR_MAP.setdefault(sector, []).append(symbol + ".NS")
 
 ALL_STOCKS = list(set([s for v in SECTOR_MAP.values() for s in v]))
 
 # ============================================================
-# SAFE DOWNLOAD
+# CACHE SAFE DOWNLOAD
 # ============================================================
 
 @st.cache_data(ttl=600)
-def safe_download(tickers, period="3mo"):
+def download_data(tickers, period="5d", interval="1d"):
     df = yf.download(
         tickers,
         period=period,
+        interval=interval,
         progress=False,
         auto_adjust=True,
         threads=False
     )
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    df = df.loc[:, ~df.columns.duplicated()]
     return df
 
 # ============================================================
 # TABS
 # ============================================================
 
-tabs = st.tabs([
-    "Market Overview",
-    "Sector Performance",
-    "Stock Analytics"
-])
+tabs = st.tabs(["Market Overview", "Sector Performance", "Stock Analytics"])
 
 # ============================================================
-# MARKET OVERVIEW
+# 1️⃣ MARKET OVERVIEW
 # ============================================================
 
 with tabs[0]:
 
     st.header("Market Overview")
 
-    bulk = yf.download(ALL_STOCKS, period="5d",
-                       progress=False, auto_adjust=True, threads=False)
+    data = download_data(ALL_STOCKS, period="5d")
 
     adv, dec = 0, 0
     movers = []
 
-    if isinstance(bulk.columns, pd.MultiIndex):
+    if isinstance(data.columns, pd.MultiIndex):
 
         for stock in ALL_STOCKS:
             try:
-                df = bulk.xs(stock, axis=1, level=1)
-                close = np.array(df["Close"]).astype(float)
-                pct = ((close[-1] - close[-2]) / close[-2]) * 100
+                df = data.xs(stock, axis=1, level=1)
+                close = df["Close"].dropna()
+
+                pct = ((close.iloc[-1] - close.iloc[-2]) /
+                       close.iloc[-2]) * 100
 
                 movers.append((stock, pct))
 
@@ -139,7 +130,7 @@ with tabs[0]:
 
     st.metric("Advance / Decline", f"{adv} / {dec}")
 
-    movers_df = pd.DataFrame(movers, columns=["Stock","% Change"])
+    movers_df = pd.DataFrame(movers, columns=["Stock", "% Change"])
     movers_df = movers_df.sort_values("% Change", ascending=False)
 
     col1, col2 = st.columns(2)
@@ -151,28 +142,28 @@ with tabs[0]:
     col2.dataframe(movers_df.tail(5), use_container_width=True)
 
 # ============================================================
-# SECTOR PERFORMANCE
+# 2️⃣ SECTOR PERFORMANCE
 # ============================================================
 
 with tabs[1]:
 
     st.header("Sector Performance")
 
+    data = download_data(ALL_STOCKS, period="5d")
+
     sector_perf = {}
 
-    bulk = yf.download(ALL_STOCKS, period="5d",
-                       progress=False, auto_adjust=True, threads=False)
-
-    if isinstance(bulk.columns, pd.MultiIndex):
+    if isinstance(data.columns, pd.MultiIndex):
 
         for sector, stocks in SECTOR_MAP.items():
             changes = []
 
             for stock in stocks:
                 try:
-                    df = bulk.xs(stock, axis=1, level=1)
-                    close = np.array(df["Close"]).astype(float)
-                    pct = ((close[-1] - close[-2]) / close[-2]) * 100
+                    df = data.xs(stock, axis=1, level=1)
+                    close = df["Close"].dropna()
+                    pct = ((close.iloc[-1] - close.iloc[-2]) /
+                           close.iloc[-2]) * 100
                     changes.append(pct)
                 except:
                     continue
@@ -195,55 +186,65 @@ with tabs[1]:
 
         st.plotly_chart(fig, use_container_width=True)
 
-        st.subheader("Sector Strength Ranking")
+        st.subheader("Sector Ranking")
         st.dataframe(
             df_sector.sort_values("% Change", ascending=False),
             use_container_width=True
         )
 
 # ============================================================
-# STOCK ANALYTICS
+# 3️⃣ STOCK ANALYTICS (5M – 10 DAYS)
 # ============================================================
 
 with tabs[2]:
 
-    st.header("Stock-Level Data (3 Months)")
+    st.header("Stock-Level Data (5-Min – Last 10 Days)")
 
     stock = st.selectbox("Select Stock", ALL_STOCKS)
 
-    df = safe_download(stock, period="3mo")
+    intraday = download_data(
+        stock,
+        period="10d",
+        interval="5m"
+    )
 
-    if not df.empty and "Close" in df.columns:
+    if not intraday.empty:
 
-        df = df.dropna()
+        intraday = intraday.dropna()
 
-        close = np.array(df["Close"]).astype(float)
-        high = np.array(df["High"]).astype(float)
-        low = np.array(df["Low"]).astype(float)
-        volume = np.array(df["Volume"]).astype(float)
+        close = intraday["Close"]
+        high = intraday["High"]
+        low = intraday["Low"]
+        volume = intraday["Volume"]
 
         # VWAP
         typical_price = (high + low + close) / 3
-        vwap = np.cumsum(typical_price * volume) / np.cumsum(volume)
+        vwap = (typical_price * volume).cumsum() / volume.cumsum()
 
         # RSI
-        rsi = ta.momentum.RSIIndicator(pd.Series(close), window=14).rsi().fillna(0)
+        rsi = ta.momentum.RSIIndicator(close, window=14).rsi().fillna(0)
 
         # MACD
-        macd = ta.trend.MACD(pd.Series(close)).macd().fillna(0)
+        macd_indicator = ta.trend.MACD(close)
+        macd = macd_indicator.macd().fillna(0)
+
+        # 52 Week High
+        daily_52w = download_data(stock, period="1y", interval="1d")
+        high_52w = daily_52w["High"].max()
 
         col1, col2, col3, col4 = st.columns(4)
 
-        col1.metric("LTP", f"{close[-1]:.2f}")
-        col2.metric("Volume", f"{int(volume[-1]):,}")
-        col3.metric("VWAP", f"{vwap[-1]:.2f}")
-        col4.metric("52W High", f"{np.max(high):.2f}")
+        col1.metric("LTP", f"{close.iloc[-1]:.2f}")
+        col2.metric("Volume", f"{int(volume.iloc[-1]):,}")
+        col3.metric("VWAP", f"{vwap.iloc[-1]:.2f}")
+        col4.metric("52W High", f"{high_52w:.2f}")
 
         col5, col6 = st.columns(2)
-        col5.metric("RSI", f"{rsi.iloc[-1]:.2f}")
+        col5.metric("RSI (14)", f"{rsi.iloc[-1]:.2f}")
         col6.metric("MACD", f"{macd.iloc[-1]:.2f}")
 
+        st.subheader("5-Min Price Chart")
         st.line_chart(close)
 
     else:
-        st.warning("Data unavailable.")
+        st.warning("No intraday data available.")
