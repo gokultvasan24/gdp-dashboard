@@ -37,7 +37,10 @@ def download_data(ticker, period="1y", interval="1d"):
 
 def project_30_days(df):
 
-    df = df.dropna(subset=["Close"])
+    if "Close" not in df.columns:
+        return pd.DataFrame()
+
+    df = df.dropna()
 
     if len(df) < 20:
         return pd.DataFrame()
@@ -45,11 +48,13 @@ def project_30_days(df):
     x = np.arange(len(df))
     y = df["Close"].values
 
-    slope, intercept = np.polyfit(x, y, 1)
+    try:
+        slope, intercept = np.polyfit(x, y, 1)
+    except:
+        return pd.DataFrame()
 
     future_x = np.arange(len(df), len(df) + 30)
     future_y = slope * future_x + intercept
-    future_y = np.array(future_y).flatten()
 
     future_dates = pd.date_range(
         start=df.index[-1] + pd.Timedelta(days=1),
@@ -66,6 +71,7 @@ def project_30_days(df):
     )
 
     return forecast_df
+
 
 # ============================================================
 # NSE FII / DII FETCH
