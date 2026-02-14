@@ -2,8 +2,7 @@ streamlit
 yfinance
 pandas
 numpy
-scipy
-statsmodels
 plotly
 ta
 requests
+scikit-learn
