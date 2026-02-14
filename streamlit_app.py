@@ -1,5 +1,5 @@
 # ============================================================
-# NSE INSTITUTIONAL DASHBOARD + GARCH ENGINE (Cloud Safe)
+# NSE INSTITUTIONAL DASHBOARD + GARCH ENGINE (FULL VERSION)
 # Author: Gokul Thanigaivasan
 # ============================================================
 
@@ -41,6 +41,34 @@ INDEX_SYMBOLS = {
 }
 
 # ============================================================
+# SECTOR MAP (YOUR PROVIDED TABLE)
+# ============================================================
+
+RAW_SECTOR_MAP = {
+    "Metals & Mining": ["HINDALCO","ADANIENT","TATASTEEL","JSWSTEEL"],
+    "FMCG": ["HINDUNILVR","NESTLEIND","TATACONSUM","ITC"],
+    "Services": ["ETERNAL","ADANIPORTS"],
+    "Oil & Gas": ["ONGC","COALINDIA","RELIANCE"],
+    "Automobile": ["HEROMOTOCO","M&M","TMPV","MARUTI","BAJAJ-AUTO","EICHERMOT"],
+    "Consumer Durables": ["TITAN","ASIANPAINT"],
+    "Power": ["POWERGRID","NTPC"],
+    "Information Technology": ["WIPRO","TCS","HCLTECH","INFY","TECHM"],
+    "Capital Goods": ["BEL"],
+    "Financial Services": ["HDFCBANK","SHRIRAMFIN","JIOFIN","KOTAKBANK",
+                           "ICICIBANK","HDFCLIFE","AXISBANK","BAJAJFINSV",
+                           "SBIN","INDUSINDBK","SBILIFE","BAJFINANCE"],
+    "Healthcare": ["SUNPHARMA","DRREDDY","APOLLOHOSP","CIPLA"],
+    "Retail": ["TRENT"],
+    "Construction Materials": ["GRASIM","ULTRACEMCO"],
+    "Construction": ["LT"]
+}
+
+SECTOR_MAP = {
+    sector: [symbol + ".NS" for symbol in stocks]
+    for sector, stocks in RAW_SECTOR_MAP.items()
+}
+
+# ============================================================
 # SIDEBAR
 # ============================================================
 
@@ -57,7 +85,7 @@ tabs = st.tabs([
 ])
 
 # ============================================================
-# SAFE DATA DOWNLOAD FUNCTION
+# SAFE DOWNLOAD
 # ============================================================
 
 @st.cache_data(ttl=600)
@@ -70,70 +98,42 @@ def safe_download(tickers, **kwargs):
             threads=False,
             **kwargs
         )
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
         return data
     except:
         return pd.DataFrame()
 
 # ============================================================
-# 1️⃣ MARKET OVERVIEW
+# MARKET OVERVIEW
 # ============================================================
-
-@st.cache_data(ttl=600)
-def get_market_snapshot():
-    snapshot = {}
-
-    for name, ticker in INDEX_SYMBOLS.items():
-        data = safe_download(ticker, period="5d", interval="1d")
-
-        if data.empty or "Close" not in data.columns or len(data) < 2:
-            continue
-
-        last = data["Close"].iloc[-1]
-        prev = data["Close"].iloc[-2]
-        change = ((last - prev) / prev) * 100
-
-        snapshot[name] = (last, change)
-
-    return snapshot
-
-
-@st.cache_data(ttl=600)
-def get_nifty_bulk_data():
-    return safe_download(NIFTY_50_TICKERS, period="5d", interval="1d")
-
 
 with tabs[0]:
     st.header("Market Overview")
 
-    snapshot = get_market_snapshot()
+    for name, ticker in INDEX_SYMBOLS.items():
+        data = safe_download(ticker, period="5d", interval="1d")
 
-    if snapshot:
-        cols = st.columns(len(snapshot))
-        for i, (name, values) in enumerate(snapshot.items()):
-            cols[i].metric(
-                label=name,
-                value=round(values[0], 2),
-                delta=f"{round(values[1], 2)}%"
-            )
-    else:
-        st.warning("Market data unavailable.")
+        if not data.empty and "Close" in data.columns and len(data) >= 2:
+            last = data["Close"].iloc[-1]
+            prev = data["Close"].iloc[-2]
+            change = ((last - prev) / prev) * 100
 
-    bulk_data = get_nifty_bulk_data()
+            st.metric(name, round(last,2), f"{round(change,2)}%")
 
-    if not bulk_data.empty:
+    # Advance / Decline + Movers
+    bulk = safe_download(NIFTY_50_TICKERS, period="5d", interval="1d")
+
+    if isinstance(bulk.columns, pd.MultiIndex):
+
         adv, dec = 0, 0
         movers = []
 
         for ticker in NIFTY_50_TICKERS:
             try:
-                df = bulk_data.xs(ticker, axis=1, level=1)
+                df = bulk.xs(ticker, axis=1, level=1)
                 if len(df) >= 2:
                     last = df["Close"].iloc[-1]
                     prev = df["Close"].iloc[-2]
                     pct = ((last - prev) / prev) * 100
-
                     movers.append((ticker, pct))
 
                     if pct > 0:
@@ -155,61 +155,64 @@ with tabs[0]:
         st.dataframe(movers_df.tail(5), use_container_width=True)
 
 # ============================================================
-# 2️⃣ SECTOR PERFORMANCE
+# SECTOR PERFORMANCE
 # ============================================================
-
-SECTORS = {
-    "Banking": ["HDFCBANK.NS","ICICIBANK.NS","SBIN.NS","KOTAKBANK.NS","AXISBANK.NS"],
-    "IT": ["TCS.NS","INFY.NS","HCLTECH.NS","WIPRO.NS","TECHM.NS"],
-    "Pharma": ["SUNPHARMA.NS","DRREDDY.NS","CIPLA.NS","DIVISLAB.NS"],
-    "Auto": ["MARUTI.NS","M&M.NS","HEROMOTOCO.NS","BAJAJ-AUTO.NS"],
-    "FMCG": ["HINDUNILVR.NS","ITC.NS","NESTLEIND.NS","BRITANNIA.NS"],
-    "Metal": ["TATASTEEL.NS","JSWSTEEL.NS","HINDALCO.NS"]
-}
 
 with tabs[1]:
     st.header("Sector Performance")
 
-    bulk_data = get_nifty_bulk_data()
-
-    sector_perf = {}
-
-    for sector, stocks in SECTORS.items():
-        changes = []
-        for s in stocks:
-            try:
-                df = bulk_data.xs(s, axis=1, level=1)
-                if len(df) >= 2:
-                    last = df["Close"].iloc[-1]
-                    prev = df["Close"].iloc[-2]
-                    pct = ((last - prev) / prev) * 100
-                    changes.append(pct)
-            except:
-                continue
-
-        if changes:
-            sector_perf[sector] = np.mean(changes)
-
-    df_sector = pd.DataFrame.from_dict(
-        sector_perf, orient='index', columns=['% Change']
+    all_sector_stocks = list(
+        set([stock for stocks in SECTOR_MAP.values() for stock in stocks])
     )
 
-    if not df_sector.empty:
-        fig = px.imshow(
-            df_sector.T,
-            text_auto=True,
-            aspect="auto",
-            color_continuous_scale="RdYlGn"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    bulk_data = safe_download(all_sector_stocks, period="5d", interval="1d")
 
-        st.subheader("Sector Strength Ranking")
-        st.dataframe(df_sector.sort_values("% Change", ascending=False))
+    if isinstance(bulk_data.columns, pd.MultiIndex):
+
+        sector_perf = {}
+
+        for sector, stocks in SECTOR_MAP.items():
+            changes = []
+
+            for stock in stocks:
+                try:
+                    df = bulk_data.xs(stock, axis=1, level=1)
+                    if len(df) >= 2:
+                        last = df["Close"].iloc[-1]
+                        prev = df["Close"].iloc[-2]
+                        pct = ((last - prev) / prev) * 100
+                        changes.append(pct)
+                except:
+                    continue
+
+            if len(changes) > 0:
+                sector_perf[sector] = np.mean(changes)
+
+        if sector_perf:
+            df_sector = pd.DataFrame.from_dict(
+                sector_perf, orient='index', columns=['% Change']
+            )
+
+            fig = px.imshow(
+                df_sector.T,
+                text_auto=True,
+                aspect="auto",
+                color_continuous_scale="RdYlGn"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.subheader("Sector Strength Ranking")
+            st.dataframe(
+                df_sector.sort_values("% Change", ascending=False),
+                use_container_width=True
+            )
+        else:
+            st.warning("Sector data unavailable.")
     else:
         st.warning("Sector data unavailable.")
 
 # ============================================================
-# 3️⃣ STOCK ANALYTICS
+# STOCK ANALYTICS
 # ============================================================
 
 with tabs[2]:
@@ -241,7 +244,7 @@ with tabs[2]:
         st.warning("Stock data unavailable.")
 
 # ============================================================
-# 4️⃣ GARCH SCREENING
+# GARCH SCREENING
 # ============================================================
 
 def get_log_returns(price_series):
