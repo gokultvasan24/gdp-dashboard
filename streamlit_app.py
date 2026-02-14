@@ -1,5 +1,5 @@
 # ============================================================
-# NSE INSTITUTIONAL DASHBOARD – FULL CLOUD SAFE VERSION
+# NSE INSTITUTIONAL DASHBOARD – FULL PROFESSIONAL VERSION
 # ============================================================
 
 import streamlit as st
@@ -12,7 +12,7 @@ import ta
 st.set_page_config(page_title="NSE Institutional Dashboard", layout="wide")
 
 # ============================================================
-# YOUR CUSTOM SECTOR MAP
+# CUSTOM SECTOR MAP
 # ============================================================
 
 RAW_SECTOR_DATA = [
@@ -50,12 +50,11 @@ for sector, symbol in RAW_SECTOR_DATA:
 ALL_STOCKS = sorted(list(set([s for v in SECTOR_MAP.values() for s in v])))
 
 # ============================================================
-# SAFE DOWNLOAD FUNCTION
+# SAFE DOWNLOAD
 # ============================================================
 
 @st.cache_data(ttl=600)
 def download_data(tickers, period="5d", interval="1d"):
-
     df = yf.download(
         tickers,
         period=period,
@@ -64,12 +63,20 @@ def download_data(tickers, period="5d", interval="1d"):
         auto_adjust=True,
         threads=False
     )
-
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-
     df = df.loc[:, ~df.columns.duplicated()]
+    return df
 
+# ============================================================
+# MARKET TIME FILTER (9:15 – 3:30 IST)
+# ============================================================
+
+def filter_market_hours(df):
+    if df.empty:
+        return df
+    df = df.tz_localize(None)
+    df = df.between_time("09:15", "15:30")
     return df
 
 # ============================================================
@@ -86,25 +93,48 @@ with tabs[0]:
 
     st.header("Market Overview")
 
-    data = yf.download(ALL_STOCKS, period="5d",
+    index_symbols = {
+        "NIFTY 50": "^NSEI",
+        "NIFTY Bank": "^NSEBANK",
+        "India VIX": "^INDIAVIX"
+    }
+
+    col1, col2, col3 = st.columns(3)
+
+    for i, (name, symbol) in enumerate(index_symbols.items()):
+
+        index_df = download_data(symbol, period="5d", interval="5m")
+        index_df = filter_market_hours(index_df)
+
+        if not index_df.empty:
+            ltp = index_df["Close"].iloc[-1]
+            prev = index_df["Close"].iloc[-2]
+            pct = ((ltp - prev) / prev) * 100
+
+            if i == 0:
+                col1.metric(name, f"{ltp:.2f}", f"{pct:.2f}%")
+                col1.line_chart(index_df["Close"])
+            elif i == 1:
+                col2.metric(name, f"{ltp:.2f}", f"{pct:.2f}%")
+                col2.line_chart(index_df["Close"])
+            else:
+                col3.metric(name, f"{ltp:.2f}", f"{pct:.2f}%")
+                col3.line_chart(index_df["Close"])
+
+    # Advance / Decline
+    st.subheader("Advance / Decline Ratio")
+
+    data = yf.download(ALL_STOCKS, period="2d",
                        progress=False, auto_adjust=True, threads=False)
 
     adv, dec = 0, 0
-    movers = []
 
     if isinstance(data.columns, pd.MultiIndex):
-
         for stock in ALL_STOCKS:
             try:
                 df = data.xs(stock, axis=1, level=1)
                 close = df["Close"].dropna()
-
-                pct = ((close.iloc[-1] - close.iloc[-2]) /
-                       close.iloc[-2]) * 100
-
-                movers.append((stock, pct))
-
-                if pct > 0:
+                if close.iloc[-1] > close.iloc[-2]:
                     adv += 1
                 else:
                     dec += 1
@@ -113,16 +143,19 @@ with tabs[0]:
 
     st.metric("Advance / Decline", f"{adv} / {dec}")
 
-    movers_df = pd.DataFrame(movers, columns=["Stock", "% Change"])
-    movers_df = movers_df.sort_values("% Change", ascending=False)
+    # FII / DII Manual Entry
+    st.subheader("FII / DII Activity")
 
-    col1, col2 = st.columns(2)
+    col4, col5 = st.columns(2)
+    fii_value = col4.number_input("FII Net Buy/Sell (₹ Cr)", value=0)
+    dii_value = col5.number_input("DII Net Buy/Sell (₹ Cr)", value=0)
 
-    col1.subheader("Top Gainers")
-    col1.dataframe(movers_df.head(5), use_container_width=True)
+    futures_position = st.selectbox(
+        "FII Index Futures Position",
+        ["Long", "Short", "Neutral"]
+    )
 
-    col2.subheader("Top Losers")
-    col2.dataframe(movers_df.tail(5), use_container_width=True)
+    st.info(f"FII: ₹{fii_value} Cr | DII: ₹{dii_value} Cr | Futures: {futures_position}")
 
 # ============================================================
 # 2️⃣ SECTOR PERFORMANCE
@@ -132,16 +165,14 @@ with tabs[1]:
 
     st.header("Sector Performance")
 
-    data = yf.download(ALL_STOCKS, period="5d",
+    data = yf.download(ALL_STOCKS, period="2d",
                        progress=False, auto_adjust=True, threads=False)
 
     sector_perf = {}
 
     if isinstance(data.columns, pd.MultiIndex):
-
         for sector, stocks in SECTOR_MAP.items():
             changes = []
-
             for stock in stocks:
                 try:
                     df = data.xs(stock, axis=1, level=1)
@@ -151,7 +182,6 @@ with tabs[1]:
                     changes.append(pct)
                 except:
                     continue
-
             if changes:
                 sector_perf[sector] = np.mean(changes)
 
@@ -160,14 +190,12 @@ with tabs[1]:
     )
 
     if not df_sector.empty:
-
         fig = px.imshow(
             df_sector.T,
             text_auto=True,
             aspect="auto",
             color_continuous_scale="RdYlGn"
         )
-
         st.plotly_chart(fig, use_container_width=True)
 
         st.subheader("Sector Ranking")
@@ -177,7 +205,7 @@ with tabs[1]:
         )
 
 # ============================================================
-# 3️⃣ STOCK ANALYTICS (5M – 10 DAYS) – FIXED
+# 3️⃣ STOCK ANALYTICS (5M – 10 DAYS)
 # ============================================================
 
 with tabs[2]:
@@ -186,37 +214,27 @@ with tabs[2]:
 
     stock = st.selectbox("Select Stock", ALL_STOCKS)
 
-    intraday = download_data(
-        stock,
-        period="10d",
-        interval="5m"
-    )
+    intraday = download_data(stock, period="10d", interval="5m")
 
-    if intraday is not None and not intraday.empty:
+    if not intraday.empty:
 
         intraday = intraday.dropna()
 
-        close = pd.Series(intraday["Close"]).astype(float)
-        high = pd.Series(intraday["High"]).astype(float)
-        low = pd.Series(intraday["Low"]).astype(float)
-        volume = pd.Series(intraday["Volume"]).astype(float)
+        close = intraday["Close"].astype(float)
+        high = intraday["High"].astype(float)
+        low = intraday["Low"].astype(float)
+        volume = intraday["Volume"].astype(float)
 
-        # VWAP
         typical_price = (high + low + close) / 3
         vwap = (typical_price * volume).cumsum() / volume.cumsum()
 
-        # RSI
         rsi = ta.momentum.RSIIndicator(close, window=14).rsi().fillna(0)
-
-        # MACD
         macd = ta.trend.MACD(close).macd().fillna(0)
 
-        # 52 Week High
         daily_52w = download_data(stock, period="1y", interval="1d")
         high_52w = daily_52w["High"].astype(float).max()
 
         col1, col2, col3, col4 = st.columns(4)
-
         col1.metric("LTP", f"{close.iloc[-1]:.2f}")
         col2.metric("Volume", f"{int(volume.iloc[-1]):,}")
         col3.metric("VWAP", f"{vwap.iloc[-1]:.2f}")
