@@ -1,6 +1,6 @@
 # ============================================================
-# NSE INSTITUTIONAL DASHBOARD + GARCH ENGINE (FULL VERSION)
-# Author: Gokul Thanigaivasan
+# NSE INSTITUTIONAL DASHBOARD + GARCH ENGINE
+# Cloud Safe Version
 # ============================================================
 
 import streamlit as st
@@ -41,51 +41,7 @@ INDEX_SYMBOLS = {
 }
 
 # ============================================================
-# SECTOR MAP (YOUR PROVIDED TABLE)
-# ============================================================
-
-RAW_SECTOR_MAP = {
-    "Metals & Mining": ["HINDALCO","ADANIENT","TATASTEEL","JSWSTEEL"],
-    "FMCG": ["HINDUNILVR","NESTLEIND","TATACONSUM","ITC"],
-    "Services": ["ETERNAL","ADANIPORTS"],
-    "Oil & Gas": ["ONGC","COALINDIA","RELIANCE"],
-    "Automobile": ["HEROMOTOCO","M&M","TMPV","MARUTI","BAJAJ-AUTO","EICHERMOT"],
-    "Consumer Durables": ["TITAN","ASIANPAINT"],
-    "Power": ["POWERGRID","NTPC"],
-    "Information Technology": ["WIPRO","TCS","HCLTECH","INFY","TECHM"],
-    "Capital Goods": ["BEL"],
-    "Financial Services": ["HDFCBANK","SHRIRAMFIN","JIOFIN","KOTAKBANK",
-                           "ICICIBANK","HDFCLIFE","AXISBANK","BAJAJFINSV",
-                           "SBIN","INDUSINDBK","SBILIFE","BAJFINANCE"],
-    "Healthcare": ["SUNPHARMA","DRREDDY","APOLLOHOSP","CIPLA"],
-    "Retail": ["TRENT"],
-    "Construction Materials": ["GRASIM","ULTRACEMCO"],
-    "Construction": ["LT"]
-}
-
-SECTOR_MAP = {
-    sector: [symbol + ".NS" for symbol in stocks]
-    for sector, stocks in RAW_SECTOR_MAP.items()
-}
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-
-st.sidebar.header("Configuration")
-start_date = st.sidebar.date_input("Start Date", pd.to_datetime("2018-01-01"))
-end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
-run_garch = st.sidebar.button("Run GARCH Screening")
-
-tabs = st.tabs([
-    "Market Overview",
-    "Sector Performance",
-    "Stock Analytics",
-    "GARCH Screening"
-])
-
-# ============================================================
-# SAFE DOWNLOAD
+# SAFE DOWNLOAD FUNCTION
 # ============================================================
 
 @st.cache_data(ttl=600)
@@ -98,9 +54,29 @@ def safe_download(tickers, **kwargs):
             threads=False,
             **kwargs
         )
+
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+
         return data
+
     except:
         return pd.DataFrame()
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+st.sidebar.header("Configuration")
+start_date = st.sidebar.date_input("Start Date", pd.to_datetime("2018-01-01"))
+end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
+run_garch = st.sidebar.button("Run GARCH Screening")
+
+tabs = st.tabs([
+    "Market Overview",
+    "Stock Analytics",
+    "GARCH Screening"
+])
 
 # ============================================================
 # MARKET OVERVIEW
@@ -112,15 +88,14 @@ with tabs[0]:
     for name, ticker in INDEX_SYMBOLS.items():
         data = safe_download(ticker, period="5d", interval="1d")
 
-        if not data.empty and "Close" in data.columns and len(data) >= 2:
+        if not data.empty and len(data) >= 2:
             last = data["Close"].iloc[-1]
             prev = data["Close"].iloc[-2]
             change = ((last - prev) / prev) * 100
-
             st.metric(name, round(last,2), f"{round(change,2)}%")
 
-    # Advance / Decline + Movers
-    bulk = safe_download(NIFTY_50_TICKERS, period="5d", interval="1d")
+    bulk = yf.download(NIFTY_50_TICKERS, period="5d", interval="1d",
+                       progress=False, auto_adjust=True, threads=False)
 
     if isinstance(bulk.columns, pd.MultiIndex):
 
@@ -135,7 +110,6 @@ with tabs[0]:
                     prev = df["Close"].iloc[-2]
                     pct = ((last - prev) / prev) * 100
                     movers.append((ticker, pct))
-
                     if pct > 0:
                         adv += 1
                     else:
@@ -155,67 +129,10 @@ with tabs[0]:
         st.dataframe(movers_df.tail(5), use_container_width=True)
 
 # ============================================================
-# SECTOR PERFORMANCE
+# STOCK ANALYTICS (FIXED)
 # ============================================================
 
 with tabs[1]:
-    st.header("Sector Performance")
-
-    all_sector_stocks = list(
-        set([stock for stocks in SECTOR_MAP.values() for stock in stocks])
-    )
-
-    bulk_data = safe_download(all_sector_stocks, period="5d", interval="1d")
-
-    if isinstance(bulk_data.columns, pd.MultiIndex):
-
-        sector_perf = {}
-
-        for sector, stocks in SECTOR_MAP.items():
-            changes = []
-
-            for stock in stocks:
-                try:
-                    df = bulk_data.xs(stock, axis=1, level=1)
-                    if len(df) >= 2:
-                        last = df["Close"].iloc[-1]
-                        prev = df["Close"].iloc[-2]
-                        pct = ((last - prev) / prev) * 100
-                        changes.append(pct)
-                except:
-                    continue
-
-            if len(changes) > 0:
-                sector_perf[sector] = np.mean(changes)
-
-        if sector_perf:
-            df_sector = pd.DataFrame.from_dict(
-                sector_perf, orient='index', columns=['% Change']
-            )
-
-            fig = px.imshow(
-                df_sector.T,
-                text_auto=True,
-                aspect="auto",
-                color_continuous_scale="RdYlGn"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-            st.subheader("Sector Strength Ranking")
-            st.dataframe(
-                df_sector.sort_values("% Change", ascending=False),
-                use_container_width=True
-            )
-        else:
-            st.warning("Sector data unavailable.")
-    else:
-        st.warning("Sector data unavailable.")
-
-# ============================================================
-# STOCK ANALYTICS
-# ============================================================
-
-with tabs[2]:
     st.header("Stock Analytics")
 
     selected_stock = st.selectbox("Select Stock", NIFTY_50_TICKERS)
@@ -224,22 +141,32 @@ with tabs[2]:
 
     if not data.empty and "Close" in data.columns:
 
-        data.dropna(inplace=True)
+        data = data.dropna().copy()
 
-        data['RSI'] = ta.momentum.RSIIndicator(data['Close']).rsi()
-        macd = ta.trend.MACD(data['Close'])
-        data['MACD'] = macd.macd()
+        close_series = data["Close"]
+
+        if isinstance(close_series, pd.DataFrame):
+            close_series = close_series.iloc[:, 0]
+
+        # RSI
+        rsi_indicator = ta.momentum.RSIIndicator(close_series)
+        data["RSI"] = rsi_indicator.rsi()
+
+        # MACD
+        macd_indicator = ta.trend.MACD(close_series)
+        data["MACD"] = macd_indicator.macd()
 
         latest = data.iloc[-1]
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("LTP", round(latest['Close'],2))
-        col2.metric("Volume", int(latest['Volume']))
-        col3.metric("52W High", round(data['High'].max(),2))
+        col1.metric("LTP", round(latest["Close"], 2))
+        col2.metric("Volume", int(latest["Volume"]))
+        col3.metric("52W High", round(data["High"].max(), 2))
 
-        st.line_chart(data[['Close']])
-        st.line_chart(data[['RSI']])
-        st.line_chart(data[['MACD']])
+        st.line_chart(data[["Close"]])
+        st.line_chart(data[["RSI"]])
+        st.line_chart(data[["MACD"]])
+
     else:
         st.warning("Stock data unavailable.")
 
@@ -250,7 +177,7 @@ with tabs[2]:
 def get_log_returns(price_series):
     return 100 * np.log(price_series / price_series.shift(1)).dropna()
 
-with tabs[3]:
+with tabs[2]:
 
     st.header("GARCH Quant Screening")
 
@@ -304,5 +231,6 @@ with tabs[3]:
             )
 
             st.success("GARCH Screening Completed")
+
         else:
             st.warning("No valid stocks processed.")
