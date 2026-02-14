@@ -18,14 +18,39 @@ sns.set_style("darkgrid")
 # SECTOR MAP (You Can Expand)
 # ============================================================
 
-SECTOR_MAP = {
-    "Banking": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS"],
-    "IT": ["TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS"],
-    "Energy": ["RELIANCE.NS", "ONGC.NS", "BPCL.NS"],
-    "Auto": ["MARUTI.NS", "TATAMOTORS.NS", "M&M.NS"],
-}
+RAW_SECTOR_DATA = [
+    ("Metals & Mining","HINDALCO"), ("FMCG","HINDUNILVR"),
+    ("Services","ETERNAL"), ("Metals & Mining","ADANIENT"),
+    ("Oil & Gas","ONGC"), ("Automobile","HEROMOTOCO"),
+    ("Metals & Mining","TATASTEEL"), ("Consumer Durables","TITAN"),
+    ("Oil & Gas","COALINDIA"), ("Services","ADANIPORTS"),
+    ("Power","POWERGRID"), ("Information Technology","WIPRO"),
+    ("FMCG","NESTLEIND"), ("Oil & Gas","RELIANCE"),
+    ("Information Technology","TCS"), ("Captial Goods","BEL"),
+    ("Financial Services","HDFCBANK"), ("Consumer Durables","ASIANPAINT"),
+    ("Financial Services","SHRIRAMFIN"), ("Automobile","M&M"),
+    ("FMCG","TATACONSUM"), ("Construction Materials","GRASIM"),
+    ("Metals & Mining","JSWSTEEL"), ("Automobile","TMPV"),
+    ("Financial Services","JIOFIN"), ("Information Technology","HCLTECH"),
+    ("Information Technology","INFY"), ("FMCG","ITC"),
+    ("Power","NTPC"), ("Telecommunication","BHARTIARTL"),
+    ("Financial Services","KOTAKBANK"), ("Financial Services","ICICIBANK"),
+    ("Automobile","BAJAJ-AUTO"), ("Healthcare","SUNPHARMA"),
+    ("Retail","TRENT"), ("Financial Services","HDFCLIFE"),
+    ("Automobile","MARUTI"), ("Financial Services","AXISBANK"),
+    ("Financial Services","BAJAJFINSV"), ("Healthcare","DRREDDY"),
+    ("Construction Materials","ULTRACEMCO"), ("Construction","LT"),
+    ("Healthcare","APOLLOHOSP"), ("Information Technology","TECHM"),
+    ("Healthcare","CIPLA"), ("Financial Services","SBIN"),
+    ("Financial Services","INDUSINDBK"), ("Financial Services","SBILIFE"),
+    ("Automobile","EICHERMOT"), ("Financial Services","BAJFINANCE")
+]
 
-ALL_STOCKS = list(set(sum(SECTOR_MAP.values(), [])))
+SECTOR_MAP = {}
+for sector, symbol in RAW_SECTOR_DATA:
+    SECTOR_MAP.setdefault(sector, []).append(symbol + ".NS")
+
+ALL_STOCKS = sorted(list(set([s for v in SECTOR_MAP.values() for s in v])))
 
 # ============================================================
 # SAFE DOWNLOAD
