@@ -156,7 +156,7 @@ with tabs[0]:
     cols = st.columns(3)
 
     for i, (name, symbol) in enumerate(index_symbols.items()):
-        df = download_data(symbol, period="5d", interval="5m")
+        df = download_data(symbol, period="5d", interval="1h")
         if not df.empty:
             ltp = df["Close"].iloc[-1]
             prev = df["Close"].iloc[-2]
@@ -269,16 +269,16 @@ with tabs[1]:
         )
 
 # ============================================================
-# 3️⃣ STOCK ANALYTICS (5M – 10 DAYS)
+# 3️⃣ STOCK ANALYTICS (1H – 10 DAYS)
 # ============================================================
 
 with tabs[2]:
 
-    st.header("Stock-Level Data (5-Min – Last 10 Days)")
+    st.header("Stock-Level Data (30-Min – Last 10 Days)")
 
     stock = st.selectbox("Select Stock", ALL_STOCKS)
 
-    intraday = download_data(stock, period="10d", interval="5m")
+    intraday = download_data(stock, period="10d", interval="1h")
 
     if not intraday.empty:
 
