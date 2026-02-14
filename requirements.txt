@@ -1,6 +1,8 @@
-streamlit>=1.30
-yfinance>=0.2.36
-pandas>=1.5
-numpy>=1.23
-statsmodels>=0.14
-scipy>=1.10
+streamlit
+yfinance
+pandas
+numpy
+scipy
+statsmodels
+plotly
+ta
