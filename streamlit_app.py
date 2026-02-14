@@ -163,11 +163,49 @@ with tabs[0]:
 with tabs[1]:
     st.header("Sector Performance")
     SECTOR_MAP = {
-        "Banking": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS"],
-        "IT": ["TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS"],
-        "Energy": ["RELIANCE.NS", "ONGC.NS", "BPCL.NS"],
-        "Auto": ["MARUTI.NS", "TATAMOTORS.NS", "M&M.NS"],
+        "Financial_Services": [
+            "HDFCBANK.NS", "ICICIBANK.NS", "AXISBANK.NS", "BAJFINANCE.NS",
+            "BAJAJFINSV.NS", "HDFCLIFE.NS", "SBIN.NS", "KOTAKBANK.NS",
+            "SBILIFE.NS", "JIOFIN.NS", "SHRIRAMFIN.NS"
+        ],
+        "Information_Technology": [
+            "TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS"
+        ],
+        "Energy_and_Oil_Gas": [
+            "RELIANCE.NS", "ONGC.NS", "COALINDIA.NS"
+        ],
+        "Automobile": [
+            "BAJAJ-AUTO.NS", "EICHERMOT.NS", "M&M.NS", "MARUTI.NS", "TMPV.NS"
+        ],
+        "Consumer_Goods": [
+            "HINDUNILVR.NS", "ITC.NS", "TATACONSUM.NS"
+        ],
+        "Healthcare": [
+            "APOLLOHOSP.NS", "CIPLA.NS", "SUNPHARMA.NS", "MAXHEALTH.NS"
+        ],
+        "Construction_and_Materials": [
+            "LT.NS", "ULTRACEMCO.NS", "GRASIM.NS"
+        ],
+        "Metals_and_Mining": [
+            "JSWSTEEL.NS", "HINDALCO.NS"
+        ],
+        "Telecommunication": [
+            "BHARTIARTL.NS", "INDIGO.NS"
+        ],
+        "Consumer_Services": [
+            "ETERNAL.NS", "TRENT.NS"
+        ],
+        "Power": [
+            "NTPC.NS", "POWERGRID.NS"
+        ],
+        "Capital_Goods": [
+            "BEL.NS"
+        ],
+        "Consumer_Durables": [
+            "TITAN.NS", "ASIANPAINT.NS"
+        ]
     }
+
     ALL_STOCKS_SECTOR = list(set(sum(SECTOR_MAP.values(), [])))
     data = yf.download(ALL_STOCKS_SECTOR, period="2wk", progress=False, auto_adjust=True, threads=False)
     sector_perf = {}
