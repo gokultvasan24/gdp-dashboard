@@ -8,6 +8,8 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import ta
+import requests
+from datetime import datetime
 
 st.set_page_config(page_title="NSE Institutional Dashboard", layout="wide")
 
@@ -69,15 +71,67 @@ def download_data(tickers, period="5d", interval="1d"):
     return df
 
 # ============================================================
-# MARKET TIME FILTER (9:15 – 3:30 IST)
+# NSE FII / DII FETCH
 # ============================================================
 
-def filter_market_hours(df):
-    if df.empty:
-        return df
-    df = df.tz_localize(None)
-    df = df.between_time("09:15", "15:30")
-    return df
+@st.cache_data(ttl=1800)
+def get_fii_dii_data():
+
+    session = requests.Session()
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "application/json"
+    }
+
+    try:
+        session.get("https://www.nseindia.com", headers=headers)
+
+        # CASH MARKET DATA
+        cash_url = "https://www.nseindia.com/api/fiidiiTradeReact"
+        cash_resp = session.get(cash_url, headers=headers)
+
+        if cash_resp.status_code != 200:
+            return None, None
+
+        data = cash_resp.json()["data"]
+        df = pd.DataFrame(data)
+
+        df = df.rename(columns={
+            "date": "Date",
+            "fiiBuyValue": "FII Buy",
+            "fiiSellValue": "FII Sell",
+            "fiiNetValue": "FII Net",
+            "diiBuyValue": "DII Buy",
+            "diiSellValue": "DII Sell",
+            "diiNetValue": "DII Net"
+        })
+
+        df["Date"] = pd.to_datetime(df["Date"], dayfirst=True)
+        df = df.sort_values("Date", ascending=False).head(5)
+
+        # DERIVATIVES POSITION
+        deriv_url = "https://www.nseindia.com/api/fiiDerivativesPosition"
+        deriv_resp = session.get(deriv_url, headers=headers)
+
+        futures_position = None
+
+        if deriv_resp.status_code == 200:
+            deriv_data = deriv_resp.json()["data"]
+            deriv_df = pd.DataFrame(deriv_data)
+
+            index_fut = deriv_df[
+                deriv_df["instrument"].str.contains("Index Futures", case=False)
+            ]
+
+            if not index_fut.empty:
+                futures_position = int(index_fut.iloc[0]["netQty"])
+
+        return df, futures_position
+
+    except:
+        return None, None
 
 # ============================================================
 # TABS
@@ -99,36 +153,23 @@ with tabs[0]:
         "India VIX": "^INDIAVIX"
     }
 
-    col1, col2, col3 = st.columns(3)
+    cols = st.columns(3)
 
     for i, (name, symbol) in enumerate(index_symbols.items()):
-
-        index_df = download_data(symbol, period="5d", interval="5m")
-        index_df = filter_market_hours(index_df)
-
-        if not index_df.empty:
-            ltp = index_df["Close"].iloc[-1]
-            prev = index_df["Close"].iloc[-2]
+        df = download_data(symbol, period="5d", interval="5m")
+        if not df.empty:
+            ltp = df["Close"].iloc[-1]
+            prev = df["Close"].iloc[-2]
             pct = ((ltp - prev) / prev) * 100
+            cols[i].metric(name, f"{ltp:.2f}", f"{pct:.2f}%")
+            cols[i].line_chart(df["Close"])
 
-            if i == 0:
-                col1.metric(name, f"{ltp:.2f}", f"{pct:.2f}%")
-                col1.line_chart(index_df["Close"])
-            elif i == 1:
-                col2.metric(name, f"{ltp:.2f}", f"{pct:.2f}%")
-                col2.line_chart(index_df["Close"])
-            else:
-                col3.metric(name, f"{ltp:.2f}", f"{pct:.2f}%")
-                col3.line_chart(index_df["Close"])
-
-    # Advance / Decline
+    # Advance Decline
     st.subheader("Advance / Decline Ratio")
-
     data = yf.download(ALL_STOCKS, period="2d",
                        progress=False, auto_adjust=True, threads=False)
 
     adv, dec = 0, 0
-
     if isinstance(data.columns, pd.MultiIndex):
         for stock in ALL_STOCKS:
             try:
@@ -143,19 +184,42 @@ with tabs[0]:
 
     st.metric("Advance / Decline", f"{adv} / {dec}")
 
-    # FII / DII Manual Entry
-    st.subheader("FII / DII Activity")
+    # =====================================================
+    # FII / DII SECTION (UPDATED – LAST 5 DAYS)
+    # =====================================================
 
-    col4, col5 = st.columns(2)
-    fii_value = col4.number_input("FII Net Buy/Sell (₹ Cr)", value=0)
-    dii_value = col5.number_input("DII Net Buy/Sell (₹ Cr)", value=0)
+    st.subheader("FII / DII Activity – Last 5 Trading Days")
 
-    futures_position = st.selectbox(
-        "FII Index Futures Position",
-        ["Long", "Short", "Neutral"]
-    )
+    fii_df, futures_pos = get_fii_dii_data()
 
-    st.info(f"FII: ₹{fii_value} Cr | DII: ₹{dii_value} Cr | Futures: {futures_position}")
+    if fii_df is not None:
+
+        st.dataframe(fii_df, use_container_width=True)
+
+        latest_date = fii_df.iloc[0]["Date"].date()
+        today = datetime.today().date()
+
+        if latest_date == today:
+            st.success("Today's data included ✅")
+        else:
+            st.warning("Today's data not yet updated on NSE")
+
+        st.subheader("FII Index Futures Net Position")
+
+        if futures_pos is not None:
+            st.metric("Net Index Futures Qty", futures_pos)
+
+            if futures_pos > 0:
+                st.success("FII Bias: LONG")
+            elif futures_pos < 0:
+                st.error("FII Bias: SHORT")
+            else:
+                st.info("FII Bias: Neutral")
+        else:
+            st.warning("Futures data unavailable")
+
+    else:
+        st.error("Unable to fetch FII/DII data from NSE")
 
 # ============================================================
 # 2️⃣ SECTOR PERFORMANCE
