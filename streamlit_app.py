@@ -1,70 +1,20 @@
 # ============================================================
-# NSE INSTITUTIONAL DASHBOARD – ELITE PROFESSIONAL VERSION
+# NSE INSTITUTIONAL DASHBOARD – STABLE CLOUD VERSION
 # ============================================================
 
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.express as px
 import plotly.graph_objects as go
 import ta
 import requests
-from datetime import datetime, timedelta
-from sklearn.linear_model import LinearRegression
+from datetime import datetime
 
 st.set_page_config(page_title="NSE Institutional Dashboard", layout="wide")
 
 # ============================================================
-# SECTOR MAP
-# ============================================================
-
-RAW_SECTOR_DATA = [
-    ("Metals & Mining","HINDALCO"), ("FMCG","HINDUNILVR"),
-    ("Services","ETERNAL"), ("Metals & Mining","ADANIENT"),
-    ("Oil & Gas","ONGC"), ("Automobile","HEROMOTOCO"),
-    ("Metals & Mining","TATASTEEL"), ("Consumer Durables","TITAN"),
-    ("Oil & Gas","COALINDIA"), ("Services","ADANIPORTS"),
-    ("Power","POWERGRID"), ("Information Technology","WIPRO"),
-    ("FMCG","NESTLEIND"), ("Oil & Gas","RELIANCE"),
-    ("Information Technology","TCS"), ("Capital Goods","BEL"),
-    ("Financial Services","HDFCBANK"), ("Consumer Durables","ASIANPAINT"),
-    ("Financial Services","SHRIRAMFIN"), ("Automobile","M&M"),
-    ("FMCG","TATACONSUM"), ("Construction Materials","GRASIM"),
-    ("Metals & Mining","JSWSTEEL"), ("Financial Services","JIOFIN"),
-    ("Information Technology","HCLTECH"), ("Information Technology","INFY"),
-    ("FMCG","ITC"), ("Power","NTPC"),
-    ("Telecommunication","BHARTIARTL"),
-    ("Financial Services","KOTAKBANK"),
-    ("Financial Services","ICICIBANK"),
-    ("Automobile","BAJAJ-AUTO"),
-    ("Healthcare","SUNPHARMA"),
-    ("Retail","TRENT"),
-    ("Financial Services","HDFCLIFE"),
-    ("Automobile","MARUTI"),
-    ("Financial Services","AXISBANK"),
-    ("Financial Services","BAJAJFINSV"),
-    ("Healthcare","DRREDDY"),
-    ("Construction Materials","ULTRACEMCO"),
-    ("Construction","LT"),
-    ("Healthcare","APOLLOHOSP"),
-    ("Information Technology","TECHM"),
-    ("Healthcare","CIPLA"),
-    ("Financial Services","SBIN"),
-    ("Financial Services","INDUSINDBK"),
-    ("Financial Services","SBILIFE"),
-    ("Automobile","EICHERMOT"),
-    ("Financial Services","BAJFINANCE")
-]
-
-SECTOR_MAP = {}
-for sector, symbol in RAW_SECTOR_DATA:
-    SECTOR_MAP.setdefault(sector, []).append(symbol + ".NS")
-
-ALL_STOCKS = sorted(list(set([s for v in SECTOR_MAP.values() for s in v])))
-
-# ============================================================
-# SAFE DOWNLOAD
+# SAFE DOWNLOAD FUNCTION
 # ============================================================
 
 @st.cache_data(ttl=600)
@@ -77,34 +27,41 @@ def download_data(ticker, period="1y", interval="1d"):
         auto_adjust=True,
         threads=False
     )
-    return df
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return df.dropna()
 
 # ============================================================
-# 30 DAY PROJECTION
+# SAFE 30 DAY PROJECTION (NO SKLEARN)
 # ============================================================
 
 def project_30_days(df):
 
-    df = df.copy()
-    df["Index"] = np.arange(len(df))
+    df = df.dropna(subset=["Close"])
 
-    X = df[["Index"]]
-    y = df["Close"]
+    if len(df) < 20:
+        return pd.DataFrame()
 
-    model = LinearRegression()
-    model.fit(X, y)
+    x = np.arange(len(df))
+    y = df["Close"].values
 
-    future_index = np.arange(len(df), len(df) + 30).reshape(-1, 1)
-    future_pred = model.predict(future_index)
+    slope, intercept = np.polyfit(x, y, 1)
+
+    future_x = np.arange(len(df), len(df) + 30)
+    future_y = slope * future_x + intercept
+    future_y = np.array(future_y).flatten()
 
     future_dates = pd.date_range(
-        start=df.index[-1] + timedelta(days=1),
+        start=df.index[-1] + pd.Timedelta(days=1),
         periods=30,
         freq="B"
     )
 
+    if len(future_dates) != len(future_y):
+        return pd.DataFrame()
+
     forecast_df = pd.DataFrame(
-        {"Close": future_pred},
+        {"Close": future_y},
         index=future_dates
     )
 
@@ -118,6 +75,7 @@ def project_30_days(df):
 def get_fii_dii_data():
 
     session = requests.Session()
+
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json"
@@ -177,7 +135,7 @@ tabs = st.tabs(["Market Overview", "Stock Analytics"])
 
 with tabs[0]:
 
-    st.header("Market Overview – 52W Range + 30 Day Projection")
+    st.header("Market Overview – 52W Fixed Range + 30D Projection")
 
     index_symbols = {
         "NIFTY 50": "^NSEI",
@@ -189,24 +147,27 @@ with tabs[0]:
 
         df = download_data(symbol, period="1y", interval="1d")
 
-        if not df.empty:
+        if df.empty:
+            st.warning(f"No data for {name}")
+            continue
 
-            df = df[df.index.dayofweek < 5]
+        df = df[df.index.dayofweek < 5]
 
-            high_52w = df["High"].max()
-            low_52w = df["Low"].min()
+        high_52w = df["High"].max()
+        low_52w = df["Low"].min()
 
-            forecast = project_30_days(df)
+        forecast = project_30_days(df)
 
-            fig = go.Figure()
+        fig = go.Figure()
 
-            fig.add_trace(go.Scatter(
-                x=df.index,
-                y=df["Close"],
-                mode="lines",
-                name="Actual"
-            ))
+        fig.add_trace(go.Scatter(
+            x=df.index,
+            y=df["Close"],
+            mode="lines",
+            name="Actual"
+        ))
 
+        if not forecast.empty:
             fig.add_trace(go.Scatter(
                 x=forecast.index,
                 y=forecast["Close"],
@@ -215,16 +176,16 @@ with tabs[0]:
                 line=dict(dash="dash")
             ))
 
-            fig.update_layout(
-                title=name,
-                yaxis=dict(range=[low_52w, high_52w]),
-                template="plotly_dark",
-                height=500
-            )
+        fig.update_layout(
+            title=name,
+            yaxis=dict(range=[low_52w, high_52w]),
+            template="plotly_dark",
+            height=500
+        )
 
-            st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
 
-    # FII DII
+    # FII DII SECTION
     st.subheader("FII / DII – Last 5 Days")
 
     fii_df, futures_pos = get_fii_dii_data()
@@ -236,20 +197,21 @@ with tabs[0]:
             st.metric("FII Index Futures Net Qty", futures_pos)
 
 # ============================================================
-# 2️⃣ STOCK ANALYTICS
+# 2️⃣ STOCK ANALYTICS (1H – 1 YEAR)
 # ============================================================
 
 with tabs[1]:
 
     st.header("Stock Analytics – 1H Data (1 Year)")
 
-    stock = st.selectbox("Select Stock", ALL_STOCKS)
+    stock = st.text_input("Enter NSE Stock (Example: RELIANCE.NS)", "RELIANCE.NS")
 
     df = download_data(stock, period="1y", interval="1h")
 
-    if not df.empty:
+    if df.empty:
+        st.warning("No data available.")
+    else:
 
-        df = df.dropna()
         df = df[df.index.dayofweek < 5]
 
         high_52w = df["High"].max()
@@ -279,6 +241,3 @@ with tabs[1]:
         )
 
         st.plotly_chart(fig, use_container_width=True)
-
-    else:
-        st.warning("No data available.")
