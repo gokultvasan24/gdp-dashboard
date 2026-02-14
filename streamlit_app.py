@@ -1,24 +1,27 @@
 # ============================================================
-# NSE INSTITUTIONAL DASHBOARD – STABLE CLOUD VERSION
+# NSE INSTITUTIONAL DASHBOARD – FINAL STABLE COMBINED VERSION
 # ============================================================
 
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-import ta
 import requests
-from datetime import datetime
+import seaborn as sns
+import matplotlib.pyplot as plt
+import re
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="NSE Institutional Dashboard", layout="wide")
+sns.set_style("darkgrid")
 
 # ============================================================
-# SAFE DOWNLOAD FUNCTION
+# SAFE YFINANCE DOWNLOAD
 # ============================================================
 
 @st.cache_data(ttl=600)
 def download_data(ticker, period="1y", interval="1d"):
+
     df = yf.download(
         ticker,
         period=period,
@@ -27,20 +30,46 @@ def download_data(ticker, period="1y", interval="1d"):
         auto_adjust=True,
         threads=False
     )
+
     if df is None or df.empty:
         return pd.DataFrame()
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df.columns = [c.capitalize() for c in df.columns]
+
+    required = ["Open", "High", "Low", "Close"]
+    if not all(col in df.columns for col in required):
+        return pd.DataFrame()
+
     return df.dropna()
 
+
 # ============================================================
-# SAFE 30 DAY PROJECTION (NO SKLEARN)
+# SIMPLE RSI (NO ta LIBRARY)
+# ============================================================
+
+def calculate_rsi(series, period=14):
+
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
+
+
+# ============================================================
+# 30 DAY PROJECTION
 # ============================================================
 
 def project_30_days(df):
-
-    if "Close" not in df.columns:
-        return pd.DataFrame()
-
-    df = df.dropna()
 
     if len(df) < 20:
         return pd.DataFrame()
@@ -48,10 +77,7 @@ def project_30_days(df):
     x = np.arange(len(df))
     y = df["Close"].values
 
-    try:
-        slope, intercept = np.polyfit(x, y, 1)
-    except:
-        return pd.DataFrame()
+    slope, intercept = np.polyfit(x, y, 1)
 
     future_x = np.arange(len(df), len(df) + 30)
     future_y = slope * future_x + intercept
@@ -62,94 +88,108 @@ def project_30_days(df):
         freq="B"
     )
 
-    if len(future_dates) != len(future_y):
-        return pd.DataFrame()
-
-    forecast_df = pd.DataFrame(
-        {"Close": future_y},
-        index=future_dates
-    )
-
-    return forecast_df
+    return pd.DataFrame({"Close": future_y}, index=future_dates)
 
 
 # ============================================================
-# NSE FII / DII FETCH
+# AUTO NSE FII / DII API
 # ============================================================
 
 @st.cache_data(ttl=1800)
-def get_fii_dii_data():
+def get_fii_dii():
 
     session = requests.Session()
-
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
         session.get("https://www.nseindia.com", headers=headers)
+        url = "https://www.nseindia.com/api/fiidiiTradeReact"
+        resp = session.get(url, headers=headers)
 
-        cash_url = "https://www.nseindia.com/api/fiidiiTradeReact"
-        cash_resp = session.get(cash_url, headers=headers)
+        if resp.status_code != 200:
+            return None
 
-        if cash_resp.status_code != 200:
-            return None, None
-
-        df = pd.DataFrame(cash_resp.json()["data"])
-
-        df = df.rename(columns={
-            "date": "Date",
-            "fiiBuyValue": "FII Buy",
-            "fiiSellValue": "FII Sell",
-            "fiiNetValue": "FII Net",
-            "diiBuyValue": "DII Buy",
-            "diiSellValue": "DII Sell",
-            "diiNetValue": "DII Net"
-        })
-
-        df["Date"] = pd.to_datetime(df["Date"], dayfirst=True)
-        df = df.sort_values("Date", ascending=False).head(5)
-
-        deriv_url = "https://www.nseindia.com/api/fiiDerivativesPosition"
-        deriv_resp = session.get(deriv_url, headers=headers)
-
-        futures_position = None
-
-        if deriv_resp.status_code == 200:
-            deriv_df = pd.DataFrame(deriv_resp.json()["data"])
-            index_fut = deriv_df[
-                deriv_df["instrument"].str.contains("Index Futures", case=False)
-            ]
-            if not index_fut.empty:
-                futures_position = int(index_fut.iloc[0]["netQty"])
-
-        return df, futures_position
+        df = pd.DataFrame(resp.json()["data"])
+        df["date"] = pd.to_datetime(df["date"], dayfirst=True)
+        return df.sort_values("date", ascending=False).head(5)
 
     except:
-        return None, None
+        return None
+
+
+# ============================================================
+# MANUAL FII/DII PARSER (Fallback)
+# ============================================================
+
+def extract_number(value):
+    value = value.replace(",", "")
+    return float(re.findall(r"-?\d+\.?\d*", value)[0])
+
+def parse_manual_data(text):
+
+    lines = text.split("\n")
+    data = []
+    row = {}
+
+    for i, line in enumerate(lines):
+
+        line = line.strip()
+
+        if re.search(r"\w{3},", line):
+            if row:
+                data.append(row)
+                row = {}
+            row["Date"] = line
+
+        elif "FII Cash Market" in line:
+            row["FII Cash"] = extract_number(lines[i+1].strip())
+
+        elif "DII Cash Market" in line:
+            row["DII Cash"] = extract_number(lines[i+1].strip())
+
+        elif line == "NIFTY":
+            row["NIFTY"] = extract_number(lines[i+1].strip())
+
+        elif line == "INDIA VIX":
+            row["VIX"] = extract_number(lines[i+1].strip())
+
+        elif line == "SENSEX":
+            row["SENSEX"] = extract_number(lines[i+1].strip())
+
+    if row:
+        data.append(row)
+
+    df = pd.DataFrame(data)
+
+    if not df.empty:
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date")
+
+    return df
+
 
 # ============================================================
 # TABS
 # ============================================================
 
-tabs = st.tabs(["Market Overview", "Stock Analytics"])
+tabs = st.tabs(["Market Overview", "Stock Analytics", "Manual FII Entry"])
+
 
 # ============================================================
-# 1️⃣ MARKET OVERVIEW
+# MARKET OVERVIEW
 # ============================================================
 
 with tabs[0]:
 
-    st.header("Market Overview – 52W Fixed Range + 30D Projection")
+    st.header("Market Overview – 52W Range + 30D Projection")
 
-    index_symbols = {
+    indices = {
         "NIFTY 50": "^NSEI",
         "NIFTY Bank": "^NSEBANK",
         "India VIX": "^INDIAVIX"
     }
 
-    for name, symbol in index_symbols.items():
+    for name, symbol in indices.items():
 
         df = download_data(symbol, period="1y", interval="1d")
 
@@ -164,53 +204,37 @@ with tabs[0]:
 
         forecast = project_30_days(df)
 
-        fig = go.Figure()
-
-        fig.add_trace(go.Scatter(
-            x=df.index,
-            y=df["Close"],
-            mode="lines",
-            name="Actual"
-        ))
+        fig, ax = plt.subplots(figsize=(12,5))
+        sns.lineplot(x=df.index, y=df["Close"], ax=ax, label="Actual")
 
         if not forecast.empty:
-            fig.add_trace(go.Scatter(
-                x=forecast.index,
-                y=forecast["Close"],
-                mode="lines",
-                name="30D Projection",
-                line=dict(dash="dash")
-            ))
+            sns.lineplot(x=forecast.index, y=forecast["Close"], ax=ax, label="30D Projection")
 
-        fig.update_layout(
-            title=name,
-            yaxis=dict(range=[low_52w, high_52w]),
-            template="plotly_dark",
-            height=500
-        )
+        ax.set_title(name)
+        ax.set_ylim(low_52w, high_52w)
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.pyplot(fig)
 
-    # FII DII SECTION
-    st.subheader("FII / DII – Last 5 Days")
+    # AUTO FII DII
+    st.subheader("FII / DII – Live NSE")
 
-    fii_df, futures_pos = get_fii_dii_data()
+    fii = get_fii_dii()
 
-    if fii_df is not None:
-        st.dataframe(fii_df, use_container_width=True)
+    if fii is not None:
+        st.dataframe(fii)
+    else:
+        st.warning("NSE API Blocked – Use Manual Entry Tab")
 
-        if futures_pos is not None:
-            st.metric("FII Index Futures Net Qty", futures_pos)
 
 # ============================================================
-# 2️⃣ STOCK ANALYTICS (1H – 1 YEAR)
+# STOCK ANALYTICS
 # ============================================================
 
 with tabs[1]:
 
     st.header("Stock Analytics – 1H Data (1 Year)")
 
-    stock = st.text_input("Enter NSE Stock (Example: RELIANCE.NS)", "RELIANCE.NS")
+    stock = st.text_input("Enter NSE Stock", "RELIANCE.NS")
 
     df = download_data(stock, period="1y", interval="1h")
 
@@ -223,27 +247,49 @@ with tabs[1]:
         high_52w = df["High"].max()
         low_52w = df["Low"].min()
 
-        rsi = ta.momentum.RSIIndicator(df["Close"], 14).rsi()
-        macd = ta.trend.MACD(df["Close"]).macd()
+        rsi = calculate_rsi(df["Close"])
 
         col1, col2, col3 = st.columns(3)
         col1.metric("LTP", f"{df['Close'].iloc[-1]:.2f}")
         col2.metric("52W High", f"{high_52w:.2f}")
         col3.metric("52W Low", f"{low_52w:.2f}")
 
-        fig = go.Figure()
+        fig, ax = plt.subplots(figsize=(12,5))
+        sns.lineplot(x=df.index, y=df["Close"], ax=ax)
+        ax.set_ylim(low_52w, high_52w)
+        ax.set_title(f"{stock} Price (1H)")
+        st.pyplot(fig)
 
-        fig.add_trace(go.Scatter(
-            x=df.index,
-            y=df["Close"],
-            mode="lines",
-            name="Price"
-        ))
+        fig2, ax2 = plt.subplots(figsize=(12,3))
+        sns.lineplot(x=df.index, y=rsi, ax=ax2)
+        ax2.axhline(70)
+        ax2.axhline(30)
+        ax2.set_title("RSI")
+        st.pyplot(fig2)
 
-        fig.update_layout(
-            yaxis=dict(range=[low_52w, high_52w]),
-            template="plotly_dark",
-            height=600
-        )
 
-        st.plotly_chart(fig, use_container_width=True)
+# ============================================================
+# MANUAL FII ENTRY TAB
+# ============================================================
+
+with tabs[2]:
+
+    st.header("Manual FII / DII Paste")
+
+    raw_text = st.text_area("Paste FII/DII Data Here")
+
+    if raw_text:
+        df_manual = parse_manual_data(raw_text)
+
+        if not df_manual.empty:
+
+            st.dataframe(df_manual)
+
+            fig, ax = plt.subplots(figsize=(12,5))
+            sns.barplot(x="Date", y="FII Cash", data=df_manual, ax=ax)
+            ax.set_title("FII Cash Flow")
+            plt.xticks(rotation=45)
+            st.pyplot(fig)
+
+        else:
+            st.warning("Unable to parse data.")
