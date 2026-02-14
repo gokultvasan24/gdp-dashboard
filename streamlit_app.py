@@ -1,5 +1,5 @@
 # ============================================================
-# NSE INSTITUTIONAL DASHBOARD - COMPLETE VERSION
+# NSE INSTITUTIONAL DASHBOARD - FULL CUSTOM SECTOR VERSION
 # ============================================================
 
 import streamlit as st
@@ -12,27 +12,67 @@ import ta
 st.set_page_config(page_title="NSE Institutional Dashboard", layout="wide")
 
 # ============================================================
-# INDEX SYMBOLS
+# YOUR CUSTOM SECTOR MAP
 # ============================================================
 
-INDEX_SYMBOLS = {
-    "NIFTY 50": "^NSEI",
-    "NIFTY Bank": "^NSEBANK",
-    "India VIX": "^INDIAVIX"
-}
+RAW_SECTOR_DATA = [
+    ("Metals & Mining","HINDALCO"),
+    ("FMCG","HINDUNILVR"),
+    ("Services","ETERNAL"),
+    ("Metals & Mining","ADANIENT"),
+    ("Oil & Gas","ONGC"),
+    ("Automobile","HEROMOTOCO"),
+    ("Metals & Mining","TATASTEEL"),
+    ("Consumer Durables","TITAN"),
+    ("Oil & Gas","COALINDIA"),
+    ("Services","ADANIPORTS"),
+    ("Power","POWERGRID"),
+    ("Information Technology","WIPRO"),
+    ("FMCG","NESTLEIND"),
+    ("Oil & Gas","RELIANCE"),
+    ("Information Technology","TCS"),
+    ("Captial Goods","BEL"),
+    ("Financial Services","HDFCBANK"),
+    ("Consumer Durables","ASIANPAINT"),
+    ("Financial Services","SHRIRAMFIN"),
+    ("Automobile","M&M"),
+    ("FMCG","TATACONSUM"),
+    ("Construction Materials","GRASIM"),
+    ("Metals & Mining","JSWSTEEL"),
+    ("Automobile","TMPV"),
+    ("Financial Services","JIOFIN"),
+    ("Information Technology","HCLTECH"),
+    ("Information Technology","INFY"),
+    ("FMCG","ITC"),
+    ("Power","NTPC"),
+    ("Telecommunication","BHARTIARTL"),
+    ("Financial Services","KOTAKBANK"),
+    ("Financial Services","ICICIBANK"),
+    ("Automobile","BAJAJ-AUTO"),
+    ("Healthcare","SUNPHARMA"),
+    ("Retail","TRENT"),
+    ("Financial Services","HDFCLIFE"),
+    ("Automobile","MARUTI"),
+    ("Financial Services","AXISBANK"),
+    ("Financial Services","BAJAJFINSV"),
+    ("Healthcare","DRREDDY"),
+    ("Construction Materials","ULTRACEMCO"),
+    ("Construction","LT"),
+    ("Healthcare","APOLLOHOSP"),
+    ("Information Technology","TECHM"),
+    ("Healthcare","CIPLA"),
+    ("Financial Services","SBIN"),
+    ("Financial Services","INDUSINDBK"),
+    ("Financial Services","SBILIFE"),
+    ("Automobile","EICHERMOT"),
+    ("Financial Services","BAJFINANCE")
+]
 
-# ============================================================
-# SECTOR MAPPING
-# ============================================================
-
-SECTOR_MAP = {
-    "Banking": ["HDFCBANK.NS","ICICIBANK.NS","SBIN.NS","AXISBANK.NS"],
-    "IT": ["TCS.NS","INFY.NS","HCLTECH.NS","WIPRO.NS"],
-    "Pharma": ["SUNPHARMA.NS","DRREDDY.NS","CIPLA.NS"],
-    "Auto": ["MARUTI.NS","M&M.NS","BAJAJ-AUTO.NS"],
-    "FMCG": ["HINDUNILVR.NS","ITC.NS","NESTLEIND.NS"],
-    "Metal": ["TATASTEEL.NS","JSWSTEEL.NS","HINDALCO.NS"]
-}
+# Convert to dict
+SECTOR_MAP = {}
+for sector, symbol in RAW_SECTOR_DATA:
+    symbol_ns = symbol + ".NS"
+    SECTOR_MAP.setdefault(sector, []).append(symbol_ns)
 
 ALL_STOCKS = list(set([s for v in SECTOR_MAP.values() for s in v]))
 
@@ -61,39 +101,19 @@ def safe_download(tickers, period="3mo"):
 # ============================================================
 
 tabs = st.tabs([
-    "1️⃣ Market Overview",
-    "2️⃣ Sector Performance",
-    "3️⃣ Stock Analytics",
-    "5️⃣ FII / DII Activity"
+    "Market Overview",
+    "Sector Performance",
+    "Stock Analytics"
 ])
 
 # ============================================================
-# 1️⃣ MARKET OVERVIEW
+# MARKET OVERVIEW
 # ============================================================
 
 with tabs[0]:
 
     st.header("Market Overview")
 
-    col1, col2, col3 = st.columns(3)
-
-    for i, (name, symbol) in enumerate(INDEX_SYMBOLS.items()):
-        data = safe_download(symbol, period="5d")
-
-        if not data.empty and len(data) >= 2:
-            close = np.array(data["Close"]).astype(float)
-            last = close[-1]
-            prev = close[-2]
-            change = ((last - prev) / prev) * 100
-
-            if i == 0:
-                col1.metric(name, f"{last:.2f}", f"{change:.2f}%")
-            elif i == 1:
-                col2.metric(name, f"{last:.2f}", f"{change:.2f}%")
-            else:
-                col3.metric(name, f"{last:.2f}", f"{change:.2f}%")
-
-    # Advance / Decline
     bulk = yf.download(ALL_STOCKS, period="5d",
                        progress=False, auto_adjust=True, threads=False)
 
@@ -106,8 +126,8 @@ with tabs[0]:
             try:
                 df = bulk.xs(stock, axis=1, level=1)
                 close = np.array(df["Close"]).astype(float)
-
                 pct = ((close[-1] - close[-2]) / close[-2]) * 100
+
                 movers.append((stock, pct))
 
                 if pct > 0:
@@ -122,16 +142,16 @@ with tabs[0]:
     movers_df = pd.DataFrame(movers, columns=["Stock","% Change"])
     movers_df = movers_df.sort_values("% Change", ascending=False)
 
-    colg, coll = st.columns(2)
+    col1, col2 = st.columns(2)
 
-    colg.subheader("Top Gainers")
-    colg.dataframe(movers_df.head(5), use_container_width=True)
+    col1.subheader("Top Gainers")
+    col1.dataframe(movers_df.head(5), use_container_width=True)
 
-    coll.subheader("Top Losers")
-    coll.dataframe(movers_df.tail(5), use_container_width=True)
+    col2.subheader("Top Losers")
+    col2.dataframe(movers_df.tail(5), use_container_width=True)
 
 # ============================================================
-# 2️⃣ SECTOR PERFORMANCE
+# SECTOR PERFORMANCE
 # ============================================================
 
 with tabs[1]:
@@ -182,7 +202,7 @@ with tabs[1]:
         )
 
 # ============================================================
-# 3️⃣ STOCK ANALYTICS
+# STOCK ANALYTICS
 # ============================================================
 
 with tabs[2]:
@@ -207,14 +227,11 @@ with tabs[2]:
         vwap = np.cumsum(typical_price * volume) / np.cumsum(volume)
 
         # RSI
-        rsi_indicator = ta.momentum.RSIIndicator(pd.Series(close), window=14)
-        rsi = rsi_indicator.rsi().fillna(0)
+        rsi = ta.momentum.RSIIndicator(pd.Series(close), window=14).rsi().fillna(0)
 
         # MACD
-        macd_indicator = ta.trend.MACD(pd.Series(close))
-        macd = macd_indicator.macd().fillna(0)
+        macd = ta.trend.MACD(pd.Series(close)).macd().fillna(0)
 
-        # Metrics
         col1, col2, col3, col4 = st.columns(4)
 
         col1.metric("LTP", f"{close[-1]:.2f}")
@@ -229,31 +246,4 @@ with tabs[2]:
         st.line_chart(close)
 
     else:
-        st.warning("Data unavailable")
-
-# ============================================================
-# 5️⃣ FII / DII ACTIVITY (STRUCTURE READY)
-# ============================================================
-
-with tabs[3]:
-
-    st.header("FII / DII Activity")
-
-    st.info("Live NSE FII/DII data requires NSE API integration.")
-
-    # Placeholder institutional data simulation
-    data = pd.DataFrame({
-        "Participant": ["FII","DII"],
-        "Net Buy/Sell (Cr)": [1200, -850]
-    })
-
-    st.dataframe(data, use_container_width=True)
-
-    st.subheader("Index Futures Position (Sample)")
-    fut = pd.DataFrame({
-        "Position": ["Long","Short"],
-        "Contracts": [45000, 38000]
-    })
-
-    st.dataframe(fut, use_container_width=True)
-
+        st.warning("Data unavailable.")
