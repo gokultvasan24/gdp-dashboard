@@ -56,7 +56,7 @@ ALL_STOCKS = sorted(list(set([s for v in SECTOR_MAP.values() for s in v])))
 # ============================================================
 
 @st.cache_data(ttl=600)
-def download_data(tickers, period="5d", interval="1d"):
+def download_data(tickers, period="3mon", interval="1d"):
     df = yf.download(
         tickers,
         period=period,
@@ -274,7 +274,7 @@ with tabs[1]:
 
 with tabs[2]:
 
-    st.header("Stock-Level Data (30-Min – Last 10 Days)")
+    st.header("Stock-Level Data (1 Hr – Last 10 Days)")
 
     stock = st.selectbox("Select Stock", ALL_STOCKS)
 
