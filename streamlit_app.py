@@ -1,13 +1,13 @@
 # ============================================================
-# NSE INSTITUTIONAL DASHBOARD – ADVANCED VERSION
+# NSE INSTITUTIONAL DASHBOARD – DROPDOWN + 1H + MACD + RSI
 # ============================================================
 
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import seaborn as sns
 import matplotlib.pyplot as plt
+import seaborn as sns
 import plotly.express as px
 import re
 
@@ -15,7 +15,7 @@ st.set_page_config(page_title="NSE Institutional Dashboard", layout="wide")
 sns.set_style("darkgrid")
 
 # ============================================================
-# SECTOR MAP (You Can Expand)
+# RAW SECTOR DATA
 # ============================================================
 
 RAW_SECTOR_DATA = [
@@ -46,34 +46,35 @@ RAW_SECTOR_DATA = [
     ("Automobile","EICHERMOT"), ("Financial Services","BAJFINANCE")
 ]
 
-SECTOR_MAP = {}
-for sector, symbol in RAW_SECTOR_DATA:
-    SECTOR_MAP.setdefault(sector, []).append(symbol + ".NS")
+# Convert to NSE ticker format
+STOCK_LIST = sorted([s + ".NS" for _, s in RAW_SECTOR_DATA])
 
-ALL_STOCKS = sorted(list(set([s for v in SECTOR_MAP.values() for s in v])))
-ALL_STOCKS += ["^NSEI", "^NSEBANK", "^INDIAVIX"]  # Add indices
+# Add major indices
+INDEX_LIST = {
+    "NIFTY 50": "^NSEI",
+    "NIFTY Bank": "^NSEBANK",
+    "India VIX": "^INDIAVIX"
+}
+
+# Dropdown options
+DISPLAY_LIST = list(INDEX_LIST.keys()) + STOCK_LIST
 
 # ============================================================
-# SAFE DOWNLOAD FUNCTION
+# DATA DOWNLOAD FUNCTION
 # ============================================================
 
 @st.cache_data(ttl=600)
-def download_data(ticker, period="6mo", interval="1d"):
+def download_data(ticker, period="6mo", interval="1h"):
     df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True, threads=False)
     if df.empty:
         return pd.DataFrame()
-    
-    # Flatten MultiIndex columns if needed
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    
-    # Convert column names to strings
     df.columns = [str(c).capitalize() for c in df.columns]
-    
     return df.dropna()
 
 # ============================================================
-# RSI
+# RSI FUNCTION
 # ============================================================
 
 def calculate_rsi(series, period=14):
@@ -86,7 +87,7 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 # ============================================================
-# MACD
+# MACD FUNCTION
 # ============================================================
 
 def calculate_macd(series):
@@ -94,7 +95,8 @@ def calculate_macd(series):
     ema26 = series.ewm(span=26, adjust=False).mean()
     macd = ema12 - ema26
     signal = macd.ewm(span=9, adjust=False).mean()
-    return macd, signal
+    histogram = macd - signal
+    return macd, signal, histogram
 
 # ============================================================
 # MANUAL FII PARSER
@@ -130,7 +132,7 @@ def parse_manual_data(text):
     return df
 
 # ============================================================
-# TABS
+# DASHBOARD TABS
 # ============================================================
 
 tabs = st.tabs(["Market Overview", "Sector Performance", "Stock Analytics", "Manual FII"])
@@ -141,13 +143,8 @@ tabs = st.tabs(["Market Overview", "Sector Performance", "Stock Analytics", "Man
 
 with tabs[0]:
     st.header("Market Overview – 52W Range")
-    indices = {
-        "NIFTY 50": "^NSEI",
-        "NIFTY Bank": "^NSEBANK",
-        "India VIX": "^INDIAVIX"
-    }
-    for name, symbol in indices.items():
-        df = download_data(symbol)
+    for name, symbol in INDEX_LIST.items():
+        df = download_data(symbol, period="1y", interval="1d")
         if df.empty:
             st.warning(f"No data for {name}")
             continue
@@ -165,7 +162,14 @@ with tabs[0]:
 
 with tabs[1]:
     st.header("Sector Performance")
-    data = yf.download(ALL_STOCKS, period="2wk", progress=False, auto_adjust=True, threads=False)
+    SECTOR_MAP = {
+        "Banking": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS"],
+        "IT": ["TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS"],
+        "Energy": ["RELIANCE.NS", "ONGC.NS", "BPCL.NS"],
+        "Auto": ["MARUTI.NS", "TATAMOTORS.NS", "M&M.NS"],
+    }
+    ALL_STOCKS_SECTOR = list(set(sum(SECTOR_MAP.values(), [])))
+    data = yf.download(ALL_STOCKS_SECTOR, period="2wk", progress=False, auto_adjust=True, threads=False)
     sector_perf = {}
     sector_2week = {}
     if isinstance(data.columns, pd.MultiIndex):
@@ -173,16 +177,13 @@ with tabs[1]:
             changes, two_week_changes = [], []
             for stock in stocks:
                 try:
-                    df = data.xs(stock, axis=1, level=1)
-                    close = df["Close"].dropna()
+                    df_s = data.xs(stock, axis=1, level=1)
+                    close = df_s["Close"].dropna()
                     if len(close) >= 2:
-                        daily_pct = ((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2]) * 100
-                        changes.append(daily_pct)
+                        changes.append((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100)
                     if len(close) >= 10:
-                        two_week_pct = ((close.iloc[-1] - close.iloc[-10]) / close.iloc[-10]) * 100
-                        two_week_changes.append(two_week_pct)
-                except:
-                    continue
+                        two_week_changes.append((close.iloc[-1] - close.iloc[-10]) / close.iloc[-10] * 100)
+                except: continue
             if changes: sector_perf[sector] = np.mean(changes)
             if two_week_changes: sector_2week[sector] = np.mean(two_week_changes)
     df_sector = pd.DataFrame.from_dict(sector_perf, orient="index", columns=["1D % Change"])
@@ -193,42 +194,49 @@ with tabs[1]:
         st.dataframe(df_sector.join(df_sector2).sort_values("1D % Change", ascending=False), use_container_width=True)
 
 # ============================================================
-# 3️⃣ STOCK ANALYTICS – 1H + MACD
+# 3️⃣ STOCK ANALYTICS
 # ============================================================
 
 with tabs[2]:
-    st.header("Stock Analytics – 1H + MACD")
-    stock = st.selectbox("Select NSE Stock", ALL_STOCKS)
-    df = download_data(stock, period="6mo", interval="1h")
+    st.header("Stock Analytics – 1H + MACD + RSI")
+    selected = st.selectbox("Select NSE Stock / Index", DISPLAY_LIST)
+    ticker = INDEX_LIST[selected] if selected in INDEX_LIST else selected
+    df = download_data(ticker)
     if df.empty:
         st.warning("No data available.")
     else:
-        high_52w = df["High"].max()
-        low_52w = df["Low"].min()
-        rsi = calculate_rsi(df["Close"])
-        macd, signal = calculate_macd(df["Close"])
-        col1, col2, col3 = st.columns(3)
-        col1.metric("LTP", f"{df['Close'].iloc[-1]:.2f}")
-        col2.metric("High", f"{high_52w:.2f}")
-        col3.metric("Low", f"{low_52w:.2f}")
-        # PRICE
-        fig, ax = plt.subplots(figsize=(12,5))
-        sns.lineplot(x=df.index, y=df["Close"], ax=ax)
-        ax.set_ylim(low_52w, high_52w)
-        ax.set_title(f"{stock} Price")
-        st.pyplot(fig)
-        # RSI
-        fig2, ax2 = plt.subplots(figsize=(12,3))
+        close = df["Close"]
+        rsi = calculate_rsi(close)
+        macd, signal, hist = calculate_macd(close)
+        high_6m, low_6m = df["High"].max(), df["Low"].min()
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("LTP", f"{close.iloc[-1]:.2f}")
+        col2.metric("6M High", f"{high_6m:.2f}")
+        col3.metric("6M Low", f"{low_6m:.2f}")
+        col4.metric("RSI (14)", f"{rsi.iloc[-1]:.2f}")
+
+        # Price Chart
+        st.subheader("1H Price Chart")
+        fig1, ax1 = plt.subplots(figsize=(14,6))
+        sns.lineplot(x=df.index, y=close, ax=ax1)
+        ax1.set_ylim(low_6m, high_6m)
+        st.pyplot(fig1)
+
+        # RSI Chart
+        st.subheader("RSI Indicator")
+        fig2, ax2 = plt.subplots(figsize=(14,4))
         sns.lineplot(x=df.index, y=rsi, ax=ax2)
-        ax2.axhline(70, color="red")
-        ax2.axhline(30, color="green")
-        ax2.set_title("RSI")
+        ax2.axhline(70, linestyle="--")
+        ax2.axhline(30, linestyle="--")
         st.pyplot(fig2)
-        # MACD
-        fig3, ax3 = plt.subplots(figsize=(12,3))
+
+        # MACD Chart
+        st.subheader("MACD Indicator")
+        fig3, ax3 = plt.subplots(figsize=(14,4))
         sns.lineplot(x=df.index, y=macd, ax=ax3, label="MACD")
         sns.lineplot(x=df.index, y=signal, ax=ax3, label="Signal")
-        ax3.set_title("MACD")
+        ax3.bar(df.index, hist, alpha=0.3)
+        ax3.legend()
         st.pyplot(fig3)
 
 # ============================================================
